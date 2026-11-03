@@ -1,3011 +1,5098 @@
-import asyncio
+# ============================================================
+# SUKISU STORE BOT - FINAL COMPLETE (43 BUGS FIXED)
+# ============================================================
+
 import sqlite3
-import random
-import logging
-import time
 import json
-import aiohttp
-import hmac
-import hashlib
-import urllib.parse
-from datetime import datetime, timedelta
-from typing import Optional, List, Tuple, Dict, Any
+import time
+import threading
+import urllib.request
+import os
+import math
+import random
+import re
+import shutil
+import sys
+import csv
+import io
+import concurrent.futures
+from datetime import datetime, date, timedelta, timezone
+import requests
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+import logging
+import logging.handlers  # BUG #16 FIX: RotatingFileHandler
+import html  # BUG #17, #18 FIX: HTML escape
+# BUG #15 FIX: uuid import removed (unused)
 
-from aiogram import Bot, Dispatcher, F, BaseMiddleware
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, Dice, BufferedInputFile
+# ============ CONFIG ============
+BOT_TOKEN = "7658498308:AAHRD3ry_D8G6QbbA8Z02ViXplfdc-3OfpM"  # Apna bot token yaha daalo (@BotFather se lo)
+ADMIN_USER_ID = 5680138195 #Yaha Admin apna user id daalega (@userinfobot se lo)
+SUCCESS_IMG = "YOUR_FILE_ID_HERE" # @RawDataBot ko image bhejo, file_id copy karo
+FAMPAY_UPI_ID = "YOUR_UPI_ID_HERE" #Apna famPay upi id yaha daalo
+DB_PATH = "your_database.db" #Database file ka naam (change kar sakte ho)
+BACKUP_DIR = "backups"
+
+API_URL = "YOUR_API_URL" #Apna API endpoint yaha daalo
+API_KEY = "YOUR_API_KEY_HERE" #Apna api key yaha daalo
+MASTER_KEY = "YOUR_MASTER_KEY_HERE" #Apna master key yaha daalo
+
+FAMPAY_VERIFY_URL = "YOUR_FAMPAY_URL" #Apna verify URL yaha daalo
+FAMPAY_QR_URL = "YOUR_FAMPAY_QR_URL" #Apna QR URL yaha daalo
+FAMPAY_API_KEY = "YOUR_FAMPAY_API_KEY_HERE" #Apna FAMPAY API key yaha daalo api lene ke liye admin @Sukisu_xyz ko contact karo
+
+FAMPAY_TIMEOUT_SECONDS = 300
+FAMPAY_CHECK_INTERVAL = 5
+PENDING_API_CHECK_INTERVAL = 60
+SPIN_EXPIRY_CHECK_INTERVAL = 60
+REVIEW_REMINDER_INTERVAL = 60
+PROCESSING_RESET_INTERVAL = 300
+MAX_REVIEW_REMINDERS = 3
+BROADCAST_DELAY = 0.05
+SPIN_COOLDOWN_SECONDS = 86400
+TICKET_COOLDOWN_SECONDS = 120
+USER_STATE_TTL_SECONDS = 3600
+INACTIVE_DAYS = 7
+
+# BUG #2, #29 FIX: max retry for pending API orders
+MAX_PENDING_API_RETRIES = 3
+
+last_api_call = 0
+API_CALL_DELAY = 1.5
+
+# BUG #12 FIX: bot username cache
+_bot_username_cache = {"value": None, "ts": 0}
+
+# ============ LOGGING ============
+# BUG #16 FIX: RotatingFileHandler added
+_log_handler = logging.handlers.RotatingFileHandler(
+    'bot.log', maxBytes=10 * 1024 * 1024, backupCount=5, encoding='utf-8'
 )
-
-# ==============================================================================
-# 1. BOT CONFIGURATION & CONSTANTS
-# ==============================================================================
-BOT_TOKEN = "7658498308:AAHRD3ry_D8G6QbbA8Z02ViXplfdc-3OfpM"
-BOT_USERNAME = "@IgNewBot_bot"
-ADMIN_ID = 5680138195
-ADMIN_CONTACT = "@SUPER_FF_KING"
-
-# --- SGVIP Payment Gateway (new) ---
-SGVIP_API_TOKEN = "PAYMENT_GATEWAY_API_TOKEN" 
- # Replace with your actual API token
-SGVIP_CREATE_ORDER_URL = "https://sgvip.site/api/create-order"
-SGVIP_CHECK_STATUS_URL = "https://sgvip.site/api/check-order-status"
-SGVIP_ORDER_TIMEOUT_MINUTES = 10
-# After payment the gateway redirects the user here (your bot link)
-SGVIP_REDIRECT_URL = f"https://t.me/{BOT_USERNAME}"
-
-# --- Reseller API (2-Tier Stock Fulfillment: Live Fallback) ---
-# These are the DEFAULT values. They can be overridden live from the
-# Admin Panel -> "Reseller API Settings" (stored in the `settings` table).
-RESELLER_API_URL = "https://bantibhaiya.to/api/reseller_v1.php"
-# change only reseller API key
-RESELLER_API_KEY = "YOUR_RESELLER_API_KEY"
-# Don't make any other changes anywhere else.
-RESELLER_MASTER_KEY = "a7f3e8b2c9d1f4a6b8c2d5e9f1a3b6c8"
-RESELLER_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/120.0.0.0 Safari/537.36")
-RESELLER_API_TIMEOUT = 25  # seconds
-
-USDT_TO_INR = 90.0
-VIP_DISCOUNT_PERCENTAGE = 10.0
-VIP_PRICE_INR = 1000.0
-
-WELCOME_STICKER_ID = "CAACAgIAAxkBAAEU-WZmH_..."  # Replace with your sticker ID
-
-FIXED_CATEGORIES = [
-    "ANDROID NON ROOT PANEL",
-    "ANDROID ROOT PANEL",
-    "PC PANEL"
-]
-
-# ==============================================================================
-# YOUR PREMIUM EMOJIS – all required emoji IDs (updated with new premium ones)
-# ==============================================================================
-DEFAULT_EMOJIS = {
-    'product_store': '5312361253610475399',
-    'profile': '5258011929993026890',
-    'add_balance': '5985630530111020079',
-    'history': '6032594876506312598',
-    'support': '5967280668885913944',
-    'store_title': '5994502837327892086',
-    'back': '5877536313623711363',
-    'upi': '5807750375033278838',
-    'reseller': '5886505193180239900',
-    'tutorial': '6005986106703613755',
-    'telegram': '5875465628285931233',
-    'whatsapp': '5954224165874569584',
-    'welcome': '5994502837327892086',
-    'vip': '5206607081334906820',
-    'category_android_non_root': '6161172706856282588',
-    'category_android_root': '6161449831031118974',
-    'category_pc': '5350554349074391003',
-    'grid_id': '5474625972751837256',
-    'name': '5215399540814781035',
-    'account_level': '6129584162992034014',
-    'regular_user': '5904630315946611415',
-    'wallet': '6210859306602995217',
-    'current_balance': '5316711376876485361',
-    'global_stats': '6161437856662298090',
-    'total_orders': '6160968017304888311',
-    'total_spent': '5197503331215361533',
-    'joined_grid': '5433614043006903194',
-    'info_icon': '6037421444789440735',
-    'check_icon': '6161241250239356403',
-    'checkbox_icon': '6161437856662298090',
-    'shield_icon': '6086672466132865380',
-    'money_icon': '5890848474563352982',
-    'redeem_icon': '5377624166436445368',
-    'wallet_left': '6210859306602995217',
-    'wallet_right': '5305699699204837855',
-    'point_down': '6161302621027049305',
-}
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot_activity.log"),
-        logging.StreamHandler()
-    ]
-)
+_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
+_api_handler = logging.handlers.RotatingFileHandler(
+    'api_errors.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8'
+)
+_api_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+api_logger = logging.getLogger('api_logger')
+api_logger.addHandler(_api_handler)
+api_logger.setLevel(logging.ERROR)
 
-def fmt_curr(amount: float) -> str:
-    return f"₹{amount:,.2f}"
+_api_success_handler = logging.handlers.RotatingFileHandler(
+    'api_success.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8'
+)
+_api_success_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+api_success_logger = logging.getLogger('api_success')
+api_success_logger.addHandler(_api_success_handler)
+api_success_logger.setLevel(logging.INFO)
 
-def safe_float(val, default=0.0):
-    """Safely convert a value to float, return default if fails."""
-    if val is None or val == "":
-        return default
+# ============ HELPERS ============
+def utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def utc_now_str():
+    return utc_now().strftime('%Y-%m-%d %H:%M:%S')
+
+def epoch_now():
+    return int(time.time())
+
+# BUG #17 FIX: HTML escape helper
+def esc(text):
+    if text is None:
+        return ""
+    return html.escape(str(text))
+
+def safe_send(chat_id, text, markup=None):
     try:
-        return float(val)
-    except (ValueError, TypeError):
-        return default
-
-# ==============================================================================
-# 2. DATABASE FUNCTIONS
-# ==============================================================================
-def db_query(query: str, params: tuple = (), fetchone: bool = False, fetchall: bool = False, commit: bool = True) -> Any:
-    conn = sqlite3.connect('Cuibcc.db')
-    c = conn.cursor()
-    try:
-        c.execute(query, params)
-        if fetchone:
-            res = c.fetchone()
-        elif fetchall:
-            res = c.fetchall()
-        else:
-            res = None
-        if commit: conn.commit()
-        return res
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
     except Exception as e:
-        logger.error(f"DB Error: {e} | Query: {query} | Params: {params}")
-        if commit: conn.rollback()
-        return None
-    finally:
-        conn.close()
+        logger.warning(f"safe_send HTML failed for {chat_id}: {e}")
+        try:
+            bot.send_message(chat_id, text, reply_markup=markup)
+        except Exception as e2:
+            logger.error(f"safe_send plain failed for {chat_id}: {e2}")
 
-def get_setting(key: str, default: str = "") -> str:
-    val = db_query("SELECT value FROM settings WHERE key=?", (key,), fetchone=True)
-    return val[0] if val and val[0] else default
-
-def set_setting(key: str, value: str) -> None:
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
-
-def log_activity(user_id: int, action: str, details: str = "") -> None:
+def safe_navigate(call, text, markup=None):
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        db_query(
-            "INSERT INTO activity_logs (user_id, action, details, timestamp) VALUES (?, ?, ?, ?)",
-            (user_id, action, details, timestamp)
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    try:
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return
+        try:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        except Exception:
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            except Exception as e2:
+                logger.error(f"safe_navigate fallback failed: {e2}")
+
+# ============ USER STATES ============
+user_states = {}
+user_states_lock = threading.Lock()
+user_state_timestamps = {}
+
+def set_user_state(user_id, state):
+    with user_states_lock:
+        user_states[user_id] = state
+        user_state_timestamps[user_id] = time.time()
+
+def get_user_state(user_id):
+    with user_states_lock:
+        ts = user_state_timestamps.get(user_id, 0)
+        if time.time() - ts > USER_STATE_TTL_SECONDS:
+            user_states.pop(user_id, None)
+            user_state_timestamps.pop(user_id, None)
+            return {}
+        return user_states.get(user_id, {})
+
+def pop_user_state(user_id):
+    with user_states_lock:
+        user_states.pop(user_id, None)
+        user_state_timestamps.pop(user_id, None)
+
+def cleanup_user_states():
+    while True:
+        try:
+            now = time.time()
+            with user_states_lock:
+                expired = [uid for uid, ts in user_state_timestamps.items() if now - ts > USER_STATE_TTL_SECONDS]
+                for uid in expired:
+                    user_states.pop(uid, None)
+                    user_state_timestamps.pop(uid, None)
+        except Exception as e:
+            logger.error(f"cleanup_user_states error: {e}")
+        time.sleep(300)
+
+# ============ RATE LIMITER ============
+# BUG #24 FIX: use plain dict + lock, no defaultdict race
+rate_limit_buckets = {}
+rate_limit_lock = threading.Lock()
+
+def is_rate_limited(key, max_calls, window_seconds):
+    with rate_limit_lock:
+        now = time.time()
+        bucket = rate_limit_buckets.get(key, [])
+        bucket = [t for t in bucket if now - t < window_seconds]
+        if len(bucket) >= max_calls:
+            rate_limit_buckets[key] = bucket
+            return True
+        bucket.append(now)
+        rate_limit_buckets[key] = bucket
+        return False
+
+# ============ DB ============
+def get_db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+# ============ ADMIN ACTIVITY LOG ============
+def log_admin_action(admin_id, action, details=""):
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO admin_logs (admin_id, action, details, created_at) VALUES (?,?,?,?)",
+            (admin_id, action[:100], details[:500], utc_now_str())
         )
+        conn.commit()
+        cursor.close()
+        conn.close()
     except Exception as e:
-        logger.error(f"Failed to log activity: {e}")
+        logger.error(f"log_admin_action error: {e}")
 
-def get_emoji(slot: str, default_id: str = None) -> str:
-    stored = get_setting(f"emoji_{slot}", "")
-    emoji_id = stored if stored and stored.isdigit() else (default_id or DEFAULT_EMOJIS.get(slot, ""))
-    if emoji_id:
-        return f'<tg-emoji emoji-id="{emoji_id}">✨</tg-emoji>'
-    return "✨"
+# ============ API ============
+def fetch_key_from_api(product_id, duration):
+    global last_api_call
+    elapsed = time.time() - last_api_call
+    if elapsed < API_CALL_DELAY:
+        time.sleep(API_CALL_DELAY - elapsed)
+    data = {'api_key': API_KEY, 'action': 'buy', 'product_id': str(product_id), 'duration': duration}
+    headers = {'Content-Type': 'application/x-www-form-urlencoded', 'x-master-key': MASTER_KEY, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        response = requests.post(API_URL, data=data, headers=headers, timeout=20, verify=True)
+        last_api_call = time.time()
+        text = response.text.strip()
+        api_success_logger.info(f"API Call | PID: {product_id} | Duration: {duration} | Response: {text[:100]}")
+        return text
+    except requests.exceptions.Timeout:
+        last_api_call = time.time()
+        api_logger.error(f"API Timeout | PID: {product_id} | Duration: {duration}")
+        return "error: API timeout"
+    except requests.exceptions.ConnectionError as e:
+        last_api_call = time.time()
+        api_logger.error(f"API Connection Error | PID: {product_id} | Duration: {duration} | {e}")
+        return "error: Connection error"
+    except Exception as e:
+        last_api_call = time.time()
+        api_logger.error(f"API Exception | PID: {product_id} | Duration: {duration} | Error: {str(e)}")
+        return f"error: {str(e)}"
 
-def get_emoji_icon(slot: str, default_id: str = None) -> str:
-    stored = get_setting(f"emoji_{slot}", "")
-    emoji_id = stored if stored and stored.isdigit() else (default_id or DEFAULT_EMOJIS.get(slot, ""))
-    return emoji_id
+def parse_api_response(api_response):
+    if not api_response:
+        return None, "Empty response"
+    text = str(api_response).strip()
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            data = json.loads(text)
+            status = data.get("status", "").lower()
+            if status == "success":
+                key = data.get("key") or data.get("license_key")
+                if key:
+                    return key.strip(), None
+            elif status == "error":
+                return None, data.get("message", "Unknown error")
+        except Exception:
+            pass
+    if re.match(r'^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$', text):
+        return text, None
+    low = text.lower()
+    if any(word in low for word in ["maintenance", "stock", "error", "invalid", "failed", "not found"]):
+        return None, text
+    if re.match(r'^[A-Za-z0-9_\-]{8,50}$', text):
+        return text, None
+    return None, text
 
-# ==============================================================================
-# 3. STRING RESOURCES – using placeholders for premium emojis
-# ==============================================================================
-UI_TEXTS = {
-    "start_menu": (
-        "{store_title}<b>𝐒𝐆 𝐏𝐀𝐍𝐄𝐋 𝐒𝐓𝐎𝐑𝐄</b>{store_title}\n\n"
-        "{product_store} 𝐏𝐫𝐨𝐝𝐮𝐜𝐭 𝐒𝐭𝐨𝐫𝐞  : 𝗮𝗹𝗹 𝗸𝗲𝘆𝘀 𝗣𝘂𝗿𝗰𝗵𝗮𝘀𝗲  & 𝗶𝗻𝘀𝘁𝗮𝗻𝘁𝗹𝘆 𝗱𝗲𝗹𝗶𝘃𝗲𝗿𝘆\n"
-        "{profile} 𝗠𝘆 𝗽𝗿𝗼𝗳𝗶𝗹𝗲 : 𝗰𝗵𝗲𝗰𝗸 𝘆𝗼𝘂𝗿 𝗮𝗰𝗰𝗼𝘂𝗻𝘁 𝗶𝗻𝗳𝗼𝗿𝗺𝗮𝘁𝗶𝗼𝗻\n"
-        "{add_balance} 𝗔𝗱𝗱 𝗯𝗮𝗹𝗮𝗻𝗰𝗲 : 𝗱𝗲𝗽𝗼𝘀𝗶𝘁𝗲 𝗯𝗮𝗹𝗮𝗻𝗰𝗲 & 𝘀𝗲𝗰𝘂𝗿𝗲 𝘀𝗲𝗿𝘃𝗶𝗰𝗲\n"
-        "{history} 𝗔𝗹𝗹 𝗵𝗶𝘀𝘁𝗼𝗿𝘆 : 𝗰𝗵𝗲𝗰𝗸 𝗮𝗹𝗹 𝗽𝘂𝗿𝗰𝗵𝗮𝘀𝗲 𝗵𝗶𝘀𝘁𝗼𝗿𝘆\n"
-        "{tutorial} 𝗧𝘂𝘁𝗼𝗿𝗶𝗮𝗹 : 𝘃𝗶𝗲𝘄 𝘁𝘂𝘁𝗼𝗿𝗶𝗮𝗹 & 𝘄𝗼𝗿𝗸 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁\n"
-        "{support} 𝗦𝘂𝗽𝗽𝗼𝗿𝘁 : 𝗯𝗼𝘁 𝗽𝗿𝗼𝗯𝗹𝗲𝗺 𝘀𝗼𝗹𝘃𝗲𝗱 𝗳𝗼𝗿 𝘀𝘂𝗽𝗽𝗼𝗿𝘁 𝗮𝗱𝗺𝗶𝗻\n"
-    ),
-    "vip_menu": (
-        "🌟 <b><u>VIP MEMBERSHIP CLUB</u></b> 🌟\n\n"
-        "Unlock premium benefits and permanent discounts!\n\n"
-        "💎 <b>VIP Benefits:</b>\n"
-        "• Flat 15% off on ALL products (Stacks with Reseller!)\n"
-        "• Priority Support\n"
-        "• Exclusive VIP-only giveaways\n\n"
-        "💳 <b>VIP Price:</b> ₹299.00 (Lifetime)\n"
-        "👤 <b>Your Status:</b> {vip_status}"
-    ),
-    "add_balance_menu": (
-        "{add_balance} <b>ADD BALANCE</b> {info_icon}\n\n"
-        "{info_icon} Select your preferred payment method. {check_icon}\n\n"
-        "┣ {upi} UPI — Fast Indian payments {checkbox_icon}\n"
-        ""
-        "{shield_icon} Payments are verified securely. {check_icon}"
-    )
+# ============ DB INIT ============
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT DEFAULT 'active',
+        category TEXT DEFAULT 'nonroot', api_pid TEXT DEFAULT NULL, demo_video TEXT DEFAULT NULL,
+        features TEXT DEFAULT NULL, download_link TEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL, duration TEXT NOT NULL,
+        price INTEGER NOT NULL, reseller_price INTEGER DEFAULT NULL,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0, banned INTEGER DEFAULT 0,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, verified INTEGER DEFAULT 0,
+        phone_number TEXT DEFAULT NULL, total_orders INTEGER DEFAULT 0, total_spent INTEGER DEFAULT 0,
+        last_active TIMESTAMP NULL DEFAULT NULL, is_reseller INTEGER DEFAULT 0,
+        referred_by INTEGER DEFAULT NULL, referral_earnings INTEGER DEFAULT 0,
+        total_referrals INTEGER DEFAULT 0, last_spin_at TIMESTAMP NULL DEFAULT NULL)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, amount INTEGER NOT NULL,
+        type TEXT DEFAULT 'purchase', details TEXT, license_key TEXT DEFAULT NULL,
+        product_name TEXT DEFAULT NULL, duration TEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS pending_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, order_id TEXT NOT NULL UNIQUE,
+        amount INTEGER NOT NULL, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS support_tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subject TEXT NOT NULL,
+        message TEXT NOT NULL, priority TEXT DEFAULT 'normal', status TEXT DEFAULT 'open',
+        admin_reply TEXT DEFAULT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS pending_api_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        plan_id INTEGER NOT NULL, amount INTEGER NOT NULL, coupon_id INTEGER DEFAULT NULL,
+        spin_reward_id INTEGER DEFAULT NULL, status TEXT DEFAULT 'pending',
+        retry_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS manual_deposits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, amount INTEGER DEFAULT 0,
+        utr TEXT NOT NULL, screenshot_file_id TEXT NOT NULL, status TEXT DEFAULT 'pending',
+        admin_reason TEXT DEFAULT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1), qr_code_file_id TEXT DEFAULT NULL,
+        selling_proof_link TEXT DEFAULT NULL, reseller_fee INTEGER DEFAULT 399,
+        reseller_min_balance INTEGER DEFAULT 2000, min_deposit INTEGER DEFAULT 500,
+        support_name_1 TEXT DEFAULT 'Support',
+        tutorial_video TEXT DEFAULT '', bot_maintenance TEXT DEFAULT 'off',
+        support_url TEXT DEFAULT 'https://t.me/',
+        manual_upi TEXT DEFAULT 'TERA_UPI_ID')""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS maintenance_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        notified INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, product_id))""")  # BUG #30 FIX: UNIQUE constraint
+    cursor.execute("""CREATE TABLE IF NOT EXISTS category_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, category TEXT NOT NULL,
+        notified INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS coupons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, discount_percent INTEGER NOT NULL,
+        used INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        rating INTEGER NOT NULL, screenshot_file_id TEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS review_reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        last_reminder_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, reminder_count INTEGER DEFAULT 0,
+        review_submitted INTEGER DEFAULT 0)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER UNIQUE, is_main INTEGER DEFAULT 0)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS support_contacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, user_id INTEGER)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS spin_rewards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, amount INTEGER NOT NULL,
+        status TEXT DEFAULT 'active', expires_at TIMESTAMP NOT NULL, warning_sent INTEGER DEFAULT 0,
+        expire_sent INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS faq (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT NOT NULL, answer TEXT NOT NULL,
+        display_order INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS admin_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER NOT NULL, action TEXT NOT NULL,
+        details TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cursor.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    cursor.execute("INSERT OR IGNORE INTO admins (user_id, is_main) VALUES (?, 1)", (ADMIN_USER_ID,))
+    migrations = [
+        "ALTER TABLE settings ADD COLUMN tutorial_video TEXT DEFAULT ''",
+        "ALTER TABLE settings ADD COLUMN reseller_fee INTEGER DEFAULT 399",
+        "ALTER TABLE settings ADD COLUMN reseller_min_balance INTEGER DEFAULT 2000",
+        "ALTER TABLE settings ADD COLUMN min_deposit INTEGER DEFAULT 500",
+        "ALTER TABLE settings ADD COLUMN support_name_1 TEXT DEFAULT 'Support'",
+        "ALTER TABLE settings ADD COLUMN bot_maintenance TEXT DEFAULT 'off'",
+        "ALTER TABLE settings ADD COLUMN support_url TEXT DEFAULT 'https://t.me/TERA_USERNAME'",
+        "ALTER TABLE settings ADD COLUMN manual_upi TEXT DEFAULT 'TERA_UPI_ID'",
+        "ALTER TABLE products ADD COLUMN api_pid TEXT DEFAULT NULL",
+        "ALTER TABLE products ADD COLUMN download_link TEXT DEFAULT NULL",
+        "ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'nonroot'",
+        "ALTER TABLE users ADD COLUMN last_spin_at TIMESTAMP NULL DEFAULT NULL",
+        "ALTER TABLE spin_rewards ADD COLUMN warning_sent INTEGER DEFAULT 0",
+        "ALTER TABLE spin_rewards ADD COLUMN expire_sent INTEGER DEFAULT 0",
+        "ALTER TABLE transactions ADD COLUMN license_key TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN product_name TEXT DEFAULT NULL",
+        "ALTER TABLE transactions ADD COLUMN duration TEXT DEFAULT NULL",
+        "ALTER TABLE pending_api_orders ADD COLUMN coupon_id INTEGER DEFAULT NULL",
+        "ALTER TABLE pending_api_orders ADD COLUMN spin_reward_id INTEGER DEFAULT NULL",
+        "ALTER TABLE pending_api_orders ADD COLUMN retry_count INTEGER DEFAULT 0",  # BUG #2 FIX
+        "ALTER TABLE review_reminders ADD COLUMN reminder_count INTEGER DEFAULT 0",
+        "ALTER TABLE support_tickets ADD COLUMN priority TEXT DEFAULT 'normal'",
+    ]
+    for sql in migrations:
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+        except Exception as e:
+            logger.warning(f"migration skip: {sql} | {e}")
+
+    # BUG #7 FIX: backfill NULL last_reminder_at
+    try:
+        cursor.execute("UPDATE review_reminders SET last_reminder_at=? WHERE last_reminder_at IS NULL", (utc_now_str(),))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"backfill review_reminders failed: {e}")
+
+    # BUG #30 FIX: add unique index (in case table already existed without it)
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_maint_notif_unique ON maintenance_notifications(user_id, product_id)")
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"unique index creation failed (may have dupes): {e}")
+
+    cursor.execute("SELECT COUNT(*) as c FROM faq")
+    if cursor.fetchone()["c"] == 0:
+        defaults = [
+            ("Balance kaise add karein?", "💰 Add Balance → FamPay (auto 5 min) ya Manual Deposit (admin verify)"),
+            ("Key kaise milegi?", "🔑 Purchase ke baad automatically key mil jayegi — key pe click karke copy karo"),
+            ("Refund milega?", "❌ Refund policy nahi hai. Balance safe rahta hai agar purchase fail ho."),
+            ("Key kaam nahi kar rahi?", "📞 Support → Create Ticket banao. Admin respond karega."),
+            ("Reseller kaise banein?", "🤝 Minimum ₹2000 balance deposit karo. ₹399 activation fee ke baad reseller ban jaoge. Baaki balance wallet mein safe rahega."),
+        ]
+        for i, (q, a) in enumerate(defaults, 1):
+            cursor.execute("INSERT INTO faq (question, answer, display_order) VALUES (?,?,?)", (q, a, i))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# ============ SETTINGS ============
+ALLOWED_SETTINGS = {'qr_code_file_id', 'selling_proof_link', 'reseller_fee', 'reseller_min_balance', 'min_deposit', 'support_name_1', 'tutorial_video', 'bot_maintenance', 'support_url', 'manual_upi'}
+
+# BUG #14 FIX: no f-string SQL — explicit mapping
+_SETTINGS_COLS = {
+    'qr_code_file_id': 'qr_code_file_id',
+    'selling_proof_link': 'selling_proof_link',
+    'reseller_fee': 'reseller_fee',
+    'reseller_min_balance': 'reseller_min_balance',
+    'min_deposit': 'min_deposit',
+    'support_name_1': 'support_name_1',
+    'tutorial_video': 'tutorial_video',
+    'bot_maintenance': 'bot_maintenance',
+    'support_url': 'support_url',
+    'manual_upi': 'manual_upi',
 }
 
-def get_ui_text(key: str, **kwargs) -> str:
-    val = db_query("SELECT value FROM settings WHERE key=?", (f"ui_{key}",), fetchone=True)
-    template = val[0] if val and val[0] else UI_TEXTS.get(key, "")
+def get_setting(key, default=None):
+    col = _SETTINGS_COLS.get(key)
+    if not col:
+        logger.warning(f"get_setting blocked unknown key: {key}")
+        return default
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT {col} FROM settings WHERE id=1")
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return row[col] if row and row[col] is not None else default
+    except Exception as e:
+        logger.error(f"get_setting error: {e}")
+        return default
 
-    emoji_map = {
-        '{store_title}': get_emoji('store_title'),
-        '{product_store}': get_emoji('product_store'),
-        '{profile}': get_emoji('profile'),
-        '{add_balance}': get_emoji('add_balance'),
-        '{history}': get_emoji('history'),
-        '{tutorial}': get_emoji('tutorial'),
-        '{support}': get_emoji('support'),
-        '{telegram}': get_emoji('telegram'),
-        '{whatsapp}': get_emoji('whatsapp'),
-        '{upi}': get_emoji('upi'),
-        '{binance}': get_emoji('binance'),
-        '{info_icon}': get_emoji('info_icon'),
-        '{check_icon}': get_emoji('check_icon'),
-        '{checkbox_icon}': get_emoji('checkbox_icon'),
-        '{shield_icon}': get_emoji('shield_icon'),
-        '{money_icon}': get_emoji('money_icon'),
-        '{redeem_icon}': get_emoji('redeem_icon'),
-        '{wallet_left}': get_emoji('wallet_left'),
-        '{wallet_right}': get_emoji('wallet_right'),
-        '{point_down}': get_emoji('point_down'),
-    }
-    for placeholder, emoji_tag in emoji_map.items():
-        template = template.replace(placeholder, emoji_tag)
-
-    if kwargs:
-        try:
-            return template.format(**kwargs)
-        except KeyError as e:
-            logger.warning(f"Missing formatting key for template {key}: {e}")
-    return template
-
-# ==============================================================================
-# 4. DATABASE INITIALISATION & MIGRATION
-# ==============================================================================
-def init_db() -> None:
-    conn = sqlite3.connect('Cuibcc.db')
-    c = conn.cursor()
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY, 
-            phone TEXT, 
-            first_name TEXT, 
-            username TEXT,
-            balance REAL DEFAULT 0.0, 
-            account_type TEXT DEFAULT 'Regular', 
-            orders_count INTEGER DEFAULT 0, 
-            spent REAL DEFAULT 0.0, 
-            last_spin TEXT, 
-            joined_date TEXT,
-            is_reseller INTEGER DEFAULT 0,
-            reseller_since TEXT,
-            total_saved REAL DEFAULT 0.0,
-            is_banned INTEGER DEFAULT 0,
-            warnings INTEGER DEFAULT 0,
-            is_vip INTEGER DEFAULT 0,
-            vip_since TEXT
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            category TEXT, 
-            panel_name TEXT DEFAULT '',
-            name TEXT, 
-            price_inr REAL, 
-            reseller_price REAL DEFAULT 0.0,
-            stock INTEGER, 
-            apk_link TEXT, 
-            validity TEXT DEFAULT 'Lifetime', 
-            device_limit TEXT DEFAULT '1 Device',
-            is_active INTEGER DEFAULT 1
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS product_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            product_id INTEGER, 
-            key_text TEXT, 
-            is_used INTEGER DEFAULT 0
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            user_id INTEGER, 
-            product_name TEXT, 
-            price_paid REAL, 
-            delivered_key TEXT, 
-            purchase_date TEXT,
-            source TEXT DEFAULT 'LOCAL',
-            api_order_id TEXT DEFAULT ''
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS tickets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            user_id INTEGER, 
-            message TEXT, 
-            status TEXT DEFAULT 'Open',
-            created_at TEXT
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY, 
-            value TEXT
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS coupons (
-            code TEXT PRIMARY KEY, 
-            amount REAL, 
-            uses_left INTEGER
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS redeemed (
-            user_id INTEGER, 
-            code TEXT
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            order_id TEXT PRIMARY KEY, 
-            user_id INTEGER, 
-            amount_inr REAL, 
-            status TEXT, 
-            timestamp INTEGER,
-            qr_url TEXT,
-            upi_id TEXT,
-            expires_at INTEGER
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS crypto_txns (
-            txid TEXT PRIMARY KEY, 
-            user_id INTEGER, 
-            amount_usdt REAL, 
-            timestamp INTEGER
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS spin_rewards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            amount REAL
-        )
-    ''')
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            action TEXT,
-            details TEXT,
-            timestamp TEXT
-        )
-    ''')
-
-    migrations = [
-        "ALTER TABLE users ADD COLUMN is_vip INTEGER DEFAULT 0",
-        "ALTER TABLE users ADD COLUMN vip_since TEXT",
-        "ALTER TABLE products ADD COLUMN is_active INTEGER DEFAULT 1",
-        "ALTER TABLE tickets ADD COLUMN created_at TEXT",
-        "ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0",
-        "ALTER TABLE users ADD COLUMN warnings INTEGER DEFAULT 0",
-        "ALTER TABLE products ADD COLUMN panel_name TEXT DEFAULT ''",
-        "ALTER TABLE transactions ADD COLUMN qr_url TEXT",
-        "ALTER TABLE transactions ADD COLUMN upi_id TEXT",
-        "ALTER TABLE transactions ADD COLUMN expires_at INTEGER",
-        # --- 2-Tier Fulfillment migrations ---
-        "ALTER TABLE products ADD COLUMN product_pid TEXT DEFAULT ''",
-        "ALTER TABLE products ADD COLUMN duration_string TEXT DEFAULT ''",
-        "ALTER TABLE products ADD COLUMN key_type TEXT DEFAULT 'V2'",
-        "ALTER TABLE orders ADD COLUMN source TEXT DEFAULT 'LOCAL'",
-        "ALTER TABLE orders ADD COLUMN api_order_id TEXT DEFAULT ''"
-    ]
-    for mig in migrations:
-        try: c.execute(mig)
-        except sqlite3.OperationalError: pass
-    
-
-    default_settings = [
-        ('reseller_system_status', 'ON'),
-        ('bot_status', 'ON'),
-        ('how_to_video', 'None'),
-        ('sgvip_token', SGVIP_API_TOKEN),
-        ('binance_api', ''),
-        ('binance_secret', ''),
-        ('binance_address', ''),
-        ('vip_status', 'OFF'),
-        ('reseller_setup_fee', '200.0'),
-        ('reseller_min_balance', '500.0'),
-        ('migration_done', '0'),
-        ('support_telegram', 'https://t.me/YourSupport'),
-        ('support_whatsapp', 'https://wa.me/YourNumber'),
-        ('ui_start_menu', UI_TEXTS['start_menu']),
-        ('ui_vip_menu', UI_TEXTS['vip_menu']),
-        ('ui_add_balance_menu', UI_TEXTS['add_balance_menu']),
-        # --- Reseller API (live fallback) settings ---
-        ('reseller_api_url', RESELLER_API_URL),
-        ('reseller_api_key', RESELLER_API_KEY),
-        ('reseller_master_key', RESELLER_MASTER_KEY),
-        ('reseller_user_agent', RESELLER_USER_AGENT),
-        ('reseller_api_status', 'ON'),
-    ]
-    for slot, emoji_id in DEFAULT_EMOJIS.items():
-        default_settings.append((f"emoji_{slot}", emoji_id))
-    
-    for key, val in default_settings:
-        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
-
-    conn.commit()
-    conn.close()
-
-
-    # Removed feature settings are intentionally ignored by the UI.
-    # Their old database values may remain, but no button or handler exposes them.
-
-def migrate_categories() -> None:
-    done = get_setting("migration_done", "0")
-    
-    # ALWAYS force update emojis and UI texts regardless of migration status
-    logger.info("Forcing emoji and UI text updates...")
-    
-    # Remove legacy Ludo Spin / Download Files settings from existing databases
-    db_query("DELETE FROM settings WHERE key IN ('emoji_ludo_spin', 'emoji_download', 'ui_download_files', 'ui_lucky_dice_result', 'all_files_link', 'spin_status', 'daily_spin_limit', 'emoji_referral')")
-
-    # Update all emoji settings
-    for slot, emoji_id in DEFAULT_EMOJIS.items():
-        set_setting(f"emoji_{slot}", emoji_id)
-    
-    # Force update UI texts
-    set_setting("ui_start_menu", UI_TEXTS['start_menu'])
-    set_setting("ui_add_balance_menu", UI_TEXTS['add_balance_menu'])
-    set_setting("ui_vip_menu", UI_TEXTS['vip_menu'])
-    logger.info("UI texts and emojis updated with new placeholders and IDs.")
-    
-    # Fix any corrupted price columns (one-time cleanup)
-    conn = sqlite3.connect('Cuibcc.db')
-    c = conn.cursor()
-    products = c.execute("SELECT id, price_inr, reseller_price FROM products").fetchall()
-    for prod in products:
-        pid = prod[0]
-        for col in ['price_inr', 'reseller_price']:
-            val = prod[1] if col == 'price_inr' else prod[2]
-            if val is None or val == "":
-                new_val = 0.0
-            else:
-                try:
-                    new_val = float(val)
-                except (ValueError, TypeError):
-                    new_val = 0.0
-            c.execute(f"UPDATE products SET {col}=? WHERE id=?", (new_val, pid))
-    conn.commit()
-    conn.close()
-    logger.info("Fixed any non-numeric price columns.")
-    
-    if done == "1":
-        return
-    
-    logger.info("Running category migration...")
-    
-    mapping = {
-        "android non root panel": "ANDROID NON ROOT PANEL",
-        "android root panel": "ANDROID ROOT PANEL",
-        "pc panel": "PC PANEL",
-    }
-    for old, new in mapping.items():
-        db_query("UPDATE products SET category = ? WHERE LOWER(category) = ?", (new, old))
-    
-    db_query("UPDATE products SET category = 'ANDROID NON ROOT PANEL' WHERE LOWER(category) NOT IN (?, ?, ?)",
-             ("android non root panel", "android root panel", "pc panel"))
-    
-    set_setting("migration_done", "1")
-    logger.info("Category migration complete.")
-
-# ==============================================================================
-# 5. MIDDLEWARES & SECURITY
-# ==============================================================================
-async def hacker_loading(message: Message, text: str = "Decrypting Data") -> Message:
-    msg = await message.answer(f"⚡ {text}\n[□□□] 0%")
-    await asyncio.sleep(0.3)
-    await msg.edit_text(f"⚡ {text}\n[■□□] 33%", parse_mode='HTML')
-    await asyncio.sleep(0.3)
-    await msg.edit_text(f"⚡ {text}\n[■■□] 66%", parse_mode='HTML')
-    await asyncio.sleep(0.3)
-    await msg.edit_text(f"⚡ {text}\n[■■■] 100%", parse_mode='HTML')
-    return msg
-
-class GlobalSecurityMiddleware(BaseMiddleware):
-    def __init__(self):
-        super().__init__()
-        self.last_action_times = {}
-
-    async def __call__(self, handler, event, data):
-        user_id = event.from_user.id
-        now = time.time()
-        if user_id in self.last_action_times:
-            if now - self.last_action_times[user_id] < 0.3:
-                return
-        self.last_action_times[user_id] = now
-
-        if user_id != ADMIN_ID:
-            user_info = db_query("SELECT is_banned FROM users WHERE user_id=?", (user_id,), fetchone=True)
-            if user_info and user_info[0] == 1:
-                msg = "🚫 <b>ACCESS DENIED</b>\nYou have been banned from using this bot.\nContact support if you think this is a mistake."
-                if isinstance(event, Message): await event.answer(msg)
-                elif isinstance(event, CallbackQuery): await event.answer(msg, show_alert=True)
-                return
-                
-            status_check = db_query("SELECT value FROM settings WHERE key='bot_status'", fetchone=True)
-            status = status_check[0] if status_check else 'ON'
-            if status == 'OFF':
-                msg = "⚠️ <b>Store Maintenance</b>\n\nThe store is currently offline for updates. Please check back later!"
-                if isinstance(event, Message): await event.answer(msg)
-                elif isinstance(event, CallbackQuery): await event.answer("⚠️ Bot is currently OFF for Maintenance.", show_alert=True)
-                return
-                
-        return await handler(event, data)
-
-dp.message.middleware(GlobalSecurityMiddleware())
-dp.callback_query.middleware(GlobalSecurityMiddleware())
-
-# ==============================================================================
-# 6. FSM STATES
-# ==============================================================================
-class UserStates(StatesGroup):
-    wait_for_ticket = State()
-    wait_for_redeem = State()
-    wait_for_crypto_txid = State()
-    custom_amount_input = State()
-    wait_for_android_id = State()   # V1 / Device-Lock products
-
-class AdminStates(StatesGroup):
-    add_prod_category = State()
-    add_prod_panel_name = State()
-    add_prod_name = State()
-    add_prod_validity = State()
-    add_prod_device_limit = State()
-    add_prod_price = State()
-    add_prod_reseller_price = State()
-    add_prod_apk = State()
-    add_prod_pid = State()
-    add_prod_duration = State()
-    add_prod_key_type = State()
-    add_prod_keys = State()
-    
-    edit_prod_field = State()
-    wait_for_new_value = State()
-    wait_for_add_keys = State()
-    wait_for_delete_key = State()
-    
-    broadcast_msg = State()
-    add_coupon_code = State()
-    add_coupon_amount = State()
-    add_coupon_uses = State()
-    
-    # Payment Gateway (SGVIP) state
-    wait_for_sgvip_token = State()
-    
-    # Binance states
-    wait_for_binance_api = State()
-    wait_for_binance_secret = State()
-    wait_for_binance_address = State()
-    
-    ticket_reply_msg = State()
-    reseller_manage_id = State()
-    manage_target_user = State()
-    wait_for_add_money = State()
-    wait_for_minus_money = State()
-    wait_for_warning = State()
-    
-    wait_for_howto_video = State()
-    
-    edit_ui_text = State()
-    edit_reseller_price = State()
-    wait_for_reseller_setup_fee = State()
-    wait_for_reseller_min_balance = State()
-    confirm_ban = State()
-    
-    wait_for_support_telegram = State()
-    wait_for_support_whatsapp = State()
-    wait_for_category_emoji = State()
-    wait_for_panel_emoji_id = State()
-    wait_for_emoji_slot = State()
-
-    # Reseller API settings
-    wait_for_reseller_url = State()
-    wait_for_reseller_api_key = State()
-    wait_for_reseller_master_key = State()
-    wait_for_reseller_user_agent = State()
-
-# ==============================================================================
-# 7. KEYBOARDS
-# ==============================================================================
-def get_category_emoji(category: str) -> str:
-    slot_map = {
-        "ANDROID NON ROOT PANEL": "category_android_non_root",
-        "ANDROID ROOT PANEL": "category_android_root",
-        "PC PANEL": "category_pc",
-    }
-    slot = slot_map.get(category)
-    if slot:
-        return get_emoji_icon(slot, DEFAULT_EMOJIS.get(slot, ""))
-    return ""
-
-def get_panel_emoji(panel_name: str) -> str:
-    stored = get_setting(f"panel_emoji_{panel_name}", "")
-    if stored and stored.isdigit():
-        return stored
-    return get_emoji_icon("product_store")
-
-def contact_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Verify Contact", request_contact=True)]], 
-        resize_keyboard=True, 
-        one_time_keyboard=True
-    )
-
-def main_menu_kb(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    status_check = db_query("SELECT value FROM settings WHERE key='reseller_system_status'", fetchone=True)
-    sys_status = status_check[0] if status_check else 'ON'
-    vip_sys_check = db_query("SELECT value FROM settings WHERE key='vip_status'", fetchone=True)
-    vip_system = vip_sys_check[0] if vip_sys_check else 'OFF'
-    
-    is_reseller = False
-    if user_id:
-        user_check = db_query("SELECT is_reseller FROM users WHERE user_id=?", (user_id,), fetchone=True)
-        if user_check:
-            is_reseller = bool(user_check[0])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(
-            text="Product Store", callback_data="menu_shop",
-            icon_custom_emoji_id=get_emoji_icon("product_store"),
-            style="danger"
-        )
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(
-            text="My Profile", callback_data="menu_profile",
-            icon_custom_emoji_id=get_emoji_icon("profile"),
-            style="primary"
-        ),
-        InlineKeyboardButton(
-            text="Add Balance", callback_data="menu_add_balance",
-            icon_custom_emoji_id=get_emoji_icon("add_balance"),
-            style="primary"
-        )
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(
-            text="Tutorials", callback_data="menu_how_to",
-            icon_custom_emoji_id=get_emoji_icon("tutorial"),
-            style="success"
-        ),
-        InlineKeyboardButton(
-            text="Support", callback_data="menu_support",
-            icon_custom_emoji_id=get_emoji_icon("support"),
-            style="danger"
-        )
-    ])
-    
-    extras_row = []
-    if sys_status == 'ON' or is_reseller:
-        extras_row.append(InlineKeyboardButton(
-            text="Reseller Panel", callback_data="menu_reseller_dash",
-            icon_custom_emoji_id=get_emoji_icon("reseller"),
-            style="primary"
-        ))
-    if vip_system == 'ON':
-        extras_row.append(InlineKeyboardButton(
-            text="VIP Club", callback_data="menu_vip_dash",
-            style="danger"
-        ))
-    if extras_row:
-        kb.inline_keyboard.append(extras_row)
-        
-    return kb
-
-def back_kb(callback: str = "back_main") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text="BACK", callback_data=callback,
-                icon_custom_emoji_id=get_emoji_icon("back"),
-                style="danger"
-            )
-        ]]
-    )
-
-def admin_kb() -> InlineKeyboardMarkup:
-    status = db_query("SELECT value FROM settings WHERE key='bot_status'", fetchone=True)
-    status_val = status[0] if status else 'ON'
-    vip_status = db_query("SELECT value FROM settings WHERE key='vip_status'", fetchone=True)
-    vip_val = vip_status[0] if vip_status else 'OFF'
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Bot Statistics", callback_data="admin_view_stats", style="primary")],
-        [InlineKeyboardButton(text="👥 User Control Panel", callback_data="admin_user_control_start", style="primary")],
-        [
-            InlineKeyboardButton(text="➕ Add Product", callback_data="admin_add_prod", style="primary"),
-            InlineKeyboardButton(text="📦 Manage Products", callback_data="admin_manage_prods", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="🔑 Bulk Add Keys", callback_data="admin_bulk_keys", style="success"),
-            InlineKeyboardButton(text="🔌 Reseller API Settings", callback_data="admin_reseller_api", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="👑 Reseller Mgmt", callback_data="admin_reseller_menu", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="🎟 Create Coupon", callback_data="admin_create_coupon", style="primary"),
-            InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast_btn", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="🎫 View Tickets", callback_data="admin_view_tickets", style="primary"),
-            InlineKeyboardButton(text="📹 Tutorial Video", callback_data="admin_set_video", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="🎨 Edit All Emojis", callback_data="admin_edit_emojis", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="💳 Payment Gateway Setup", callback_data="admin_setup_sgvip", style="primary"),
-        ],
-        [
-            InlineKeyboardButton(text="✏️ Edit UI Texts", callback_data="admin_edit_ui_menu", style="primary"),
-            InlineKeyboardButton(text="📝 Edit Reseller Price", callback_data="admin_edit_reseller_price", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="💰 Reseller Fee", callback_data="admin_set_reseller_fee", style="primary"),
-            InlineKeyboardButton(text="💳 Min Balance", callback_data="admin_set_reseller_min", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="📞 Set Support Links", callback_data="admin_set_support_links", style="primary"),
-            InlineKeyboardButton(text="🎨 Set Category Emojis", callback_data="admin_set_category_emojis", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="🖼 Set Panel Emojis", callback_data="admin_set_panel_emojis", style="primary")
-        ],
-        [
-            InlineKeyboardButton(
-                text=f"Bot Status: {status_val} {'🟢' if status_val == 'ON' else '🔴'}",
-                callback_data="admin_toggle_bot",
-                style="success" if status_val == 'ON' else "danger"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text=f"VIP System: {vip_val} {'🟢' if vip_val == 'ON' else '🔴'}",
-                callback_data="admin_toggle_vip_sys",
-                style="success" if vip_val == 'ON' else "danger"
-            )
-        ]
-    ])
-    return kb
-
-def admin_back_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="Back to Admin", callback_data="admin_panel_back",
-            icon_custom_emoji_id=get_emoji_icon("back"),
-            style="danger"
-        )
-    ]])
-
-# ==============================================================================
-# 8. NOTIFICATIONS
-# ==============================================================================
-async def send_advanced_notification(user_id: int, notif_type: str, amount: float, product: str = None, key: str = None, gateway: str = "SGVIP") -> None:
-    user_info = db_query("SELECT first_name, phone, username, is_reseller, is_vip FROM users WHERE user_id=?", (user_id,), fetchone=True)
-    
-    name = user_info[0] if user_info else "Unknown"
-    phone = user_info[1] if user_info and user_info[1] else "Not Provided"
-    username = f"@{user_info[2]}" if user_info and user_info[2] else "None"
-    
-    tags = []
-    if user_info and user_info[3]: tags.append("👑 Reseller")
-    if user_info and user_info[4]: tags.append("🌟 VIP")
-    tag_str = " | ".join(tags) if tags else "👤 Regular"
-        
-    time_now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
-    
-    if notif_type == "ORDER":
-        title = "🛒 <b>NEW ORDER PROCESSED!</b> 🛒"
-        details = (f"📦 <b>Product:</b> {product}\n🔑 <b>Key:</b> <code>{key}</code>\n💰 <b>Amount Paid:</b> ₹{amount:.2f}\n📅 <b>Time:</b> {time_now}")
-    else:
-        title = "💰 <b>NEW WALLET DEPOSIT!</b> 💰"
-        details = (f"💵 <b>Amount Added:</b> ₹{amount:.2f}\n🧾 <b>Gateway:</b> {gateway}\n🆔 <b>Reference:</b> <code>{product}</code>\n📅 <b>Time:</b> {time_now}")
-
-    msg = f"{title}\n━━━━━━━━━━━━━━━━━━\n👤 <b>Name:</b> {name}\n🆔 <b>User ID:</b> <code>{user_id}</code>\n📱 <b>Phone:</b> {phone}\n🔗 <b>Username:</b> {username}\n🏷 <b>Status:</b> {tag_str}\n━━━━━━━━━━━━━━━━━━\n{details}"
-    try: 
-        await bot.send_message(ADMIN_ID, msg, parse_mode='HTML')
-    except Exception as e: 
-        logger.error(f"Failed to send admin notification: {e}")
-
-# ==============================================================================
-# 8B. 2-TIER STOCK FULFILLMENT ENGINE
-#     Priority 1: Local Vault (product_keys)  ->  Priority 2: Reseller API
-# ==============================================================================
-def get_reseller_config() -> Dict[str, str]:
-    """Read reseller API config from DB settings, falling back to constants."""
-    return {
-        "url": get_setting("reseller_api_url", RESELLER_API_URL),
-        "api_key": get_setting("reseller_api_key", RESELLER_API_KEY),
-        "master_key": get_setting("reseller_master_key", RESELLER_MASTER_KEY),
-        "user_agent": get_setting("reseller_user_agent", RESELLER_USER_AGENT),
-        "status": get_setting("reseller_api_status", "ON"),
-    }
-
-
-def is_reseller_api_enabled() -> bool:
-    return get_reseller_config().get("status", "ON").upper() == "ON"
-
-
-def product_api_ready(product_pid: Optional[str], duration_string: Optional[str]) -> bool:
-    """
-    True only when THIS product can be bought live:
-    global API switch is ON and the product has both a PID and an exact duration.
-    """
-    if not is_reseller_api_enabled():
+def update_setting(key, value):
+    col = _SETTINGS_COLS.get(key)
+    if not col:
+        logger.warning(f"update_setting blocked unknown key: {key}")
         return False
-    pid = (product_pid or "").strip()
-    dur = (duration_string or "").strip()
-    return bool(pid) and bool(dur) and pid.lower() not in ("none", "null", "0")
-
-
-def refund_balance(user_id: int, amount: float, savings: float = 0.0) -> None:
-    """Reverse a charge: restore balance and undo spent/orders/saved counters."""
-    if amount <= 0:
-        return
-    db_query(
-        "UPDATE users SET balance = balance + ?, "
-        "spent = MAX(spent - ?, 0), "
-        "total_saved = MAX(total_saved - ?, 0), "
-        "orders_count = MAX(orders_count - 1, 0) WHERE user_id=?",
-        (amount, amount, savings, user_id)
-    )
-    log_activity(user_id, "BALANCE_REFUNDED", f"Refunded {amount}")
-
-
-def take_local_keys(prod_id: int, quantity: int) -> List[Tuple[int, str]]:
-    """
-    Atomically reserve up to `quantity` unused keys from the local vault.
-    Returns a list of (key_id, key_text). Marks them used and decrements stock.
-    If fewer than `quantity` keys exist, it reserves whatever is available
-    (caller decides whether to top-up via API or roll back).
-    """
-    if quantity <= 0:
-        return []
-    conn = sqlite3.connect('Cuibcc.db')
     try:
-        c = conn.cursor()
-        rows = c.execute(
-            "SELECT id, key_text FROM product_keys "
-            "WHERE product_id=? AND is_used=0 ORDER BY id LIMIT ?",
-            (prod_id, quantity)
-        ).fetchall()
-        if not rows:
-            conn.rollback()
-            return []
-        ids = [(r[0],) for r in rows]
-        c.executemany("UPDATE product_keys SET is_used=1 WHERE id=?", ids)
-        c.execute(
-            "UPDATE products SET stock = MAX(stock - ?, 0) WHERE id=?",
-            (len(rows), prod_id)
-        )
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE settings SET {col}=? WHERE id=1", (value,))
         conn.commit()
-        return [(r[0], r[1]) for r in rows]
-    except Exception as e:
-        logger.error(f"take_local_keys failed: {e}")
-        conn.rollback()
-        return []
-    finally:
+        cursor.close()
         conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"update_setting error: {e}")
+        return False
 
-
-def restore_local_keys(key_ids: List[int]) -> None:
-    """Roll back a local reservation (used when the API top-up fails)."""
-    if not key_ids:
-        return
-    conn = sqlite3.connect('Cuibcc.db')
+def update_last_active(user_id):
     try:
-        c = conn.cursor()
-        c.executemany("UPDATE product_keys SET is_used=0 WHERE id=?", [(i,) for i in key_ids])
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET last_active=? WHERE id=?", (utc_now_str(), user_id))
         conn.commit()
-    except Exception as e:
-        logger.error(f"restore_local_keys failed: {e}")
-        conn.rollback()
-    finally:
+        cursor.close()
         conn.close()
-
-
-def _extract_api_keys(data: Any) -> List[str]:
-    """Robustly pull a list of key strings out of an API JSON response."""
-    if isinstance(data, list):
-        data = {"keys": data}
-    if not isinstance(data, dict):
-        return []
-    candidates = [data.get("keys")]
-    for wrapper in ("data", "result", "response"):
-        node = data.get(wrapper)
-        if isinstance(node, dict):
-            candidates.append(node.get("keys"))
-        elif isinstance(node, list):
-            candidates.append(node)
-    for cand in candidates:
-        if isinstance(cand, list) and cand:
-            out = []
-            for item in cand:
-                if isinstance(item, str) and item.strip():
-                    out.append(item.strip())
-                elif isinstance(item, dict):
-                    for k in ("key", "license", "license_key", "key_text", "value"):
-                        if item.get(k):
-                            out.append(str(item[k]).strip())
-                            break
-            if out:
-                return out
-    return []
-
-
-async def call_reseller_api(product_pid: str, duration: str, quantity: int,
-                            android_id: Optional[str] = None) -> Dict[str, Any]:
-    """
-    POST to the reseller API to buy live key(s).
-    Returns {"success": bool, "keys": [...], "error": str|None, "raw": str}.
-    """
-    cfg = get_reseller_config()
-    if cfg["status"].upper() != "ON":
-        return {"success": False, "keys": [], "error": "Reseller API is disabled by admin.", "raw": ""}
-    if not product_pid or not duration:
-        return {"success": False, "keys": [],
-                "error": "Product PID / duration not configured for this package.", "raw": ""}
-
-    payload = {
-        "api_key": cfg["api_key"],
-        "action": "buy",
-        "product_id": str(product_pid).strip(),
-        "duration": str(duration).strip(),
-        "quantity": str(max(1, int(quantity))),
-    }
-    # android_id is ONLY required for Device-Lock / V1 products.
-    if android_id:
-        payload["android_id"] = str(android_id).strip()
-
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "x-master-key": cfg["master_key"],
-        "User-Agent": cfg["user_agent"],
-    }
-
-    raw = ""
-    try:
-        timeout = aiohttp.ClientTimeout(total=RESELLER_API_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(cfg["url"], data=payload, headers=headers) as resp:
-                raw = await resp.text()
-                logger.info(f"Reseller API HTTP {resp.status}: {raw[:500]}")
-                if resp.status != 200:
-                    return {"success": False, "keys": [],
-                            "error": f"Reseller API HTTP {resp.status}. Please contact admin.", "raw": raw}
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return {"success": False, "keys": [],
-                    "error": "Invalid response from reseller API.", "raw": raw}
-
-        keys = _extract_api_keys(data)
-        if keys:
-            api_order_id = ""
-            if isinstance(data, dict):
-                api_order_id = str(data.get("order_id") or data.get("orderId") or "")
-            return {"success": True, "keys": keys, "error": None, "raw": raw,
-                    "api_order_id": api_order_id}
-
-        # No keys -> surface the API's own message if present.
-        msg = ""
-        if isinstance(data, dict):
-            msg = str(data.get("message") or data.get("error") or data.get("msg") or "").strip()
-        return {"success": False, "keys": [],
-                "error": msg or "Out of Stock / Please Contact Admin", "raw": raw}
-
-    except asyncio.TimeoutError:
-        logger.error("Reseller API timeout")
-        return {"success": False, "keys": [],
-                "error": "Reseller API timed out. Please try again / contact admin.", "raw": raw}
     except Exception as e:
-        logger.error(f"Reseller API exception: {e}")
-        return {"success": False, "keys": [],
-                "error": "Reseller API connection failed. Please contact admin.", "raw": raw}
+        logger.error(f"update_last_active error: {e}")
 
+def is_reseller(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_reseller FROM users WHERE id=?", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return bool(row and row["is_reseller"] == 1)
 
-async def fulfill_keys(prod_id: int, quantity: int = 1,
-                       android_id: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Orchestrates the 2-tier delivery:
-      1) Reserve from the local vault.
-      2) If short, top-up the remainder from the reseller API.
-      3) If the API fails, roll back local reservations (no stock leak).
-    Returns {"success", "keys", "source", "error"}.
-    """
-    quantity = max(1, int(quantity))
-    prod = db_query(
-        "SELECT product_pid, duration_string, key_type FROM products WHERE id=?",
-        (prod_id,), fetchone=True
-    )
-    if not prod:
-        return {"success": False, "keys": [], "source": None, "error": "Product not found."}
-    product_pid, duration_string, key_type = prod[0] or "", prod[1] or "", (prod[2] or "V2")
+def is_verified(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT verified FROM users WHERE id=?", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return bool(row and row["verified"] == 1)
 
-    # --- Priority 1: Local Vault ---
-    local_rows = take_local_keys(prod_id, quantity)
-    if len(local_rows) >= quantity:
-        return {"success": True, "keys": [r[1] for r in local_rows[:quantity]],
-                "source": "LOCAL", "error": None}
+def set_verified(user_id, phone_number):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET verified=1, phone_number=? WHERE id=?", (phone_number, user_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-    need = quantity - len(local_rows)
+def is_banned(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT banned FROM users WHERE id=?", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return bool(row and row["banned"] == 1)
 
-    # --- Priority 2: Reseller API fallback ---
-    api_android = android_id if str(key_type).upper() == "V1" else None
-    api_res = await call_reseller_api(product_pid, duration_string, need, api_android)
+def ban_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET banned=1 WHERE id=?", (user_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-    if api_res.get("success") and len(api_res.get("keys", [])) >= need:
-        api_keys = api_res["keys"][:need]
-        source = "LOCAL+API" if local_rows else "API"
-        return {"success": True,
-                "keys": [r[1] for r in local_rows] + api_keys,
-                "source": source, "error": None,
-                "api_order_id": api_res.get("api_order_id", "")}
+def unban_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET banned=0 WHERE id=?", (user_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-    # API failed -> release any local keys we reserved so stock is not lost.
-    if local_rows:
-        restore_local_keys([r[0] for r in local_rows])
-        db_query("UPDATE products SET stock = stock + ? WHERE id=?", (len(local_rows), prod_id))
-    return {"success": False, "keys": [], "source": None,
-            "error": api_res.get("error") or "Out of Stock / Please Contact Admin"}
+def is_new_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE user_id=? AND type='add_money'", (user_id,))
+    count = cursor.fetchone()["c"]
+    cursor.close()
+    conn.close()
+    return count == 0
 
+# ============ MAINTENANCE ============
+_maintenance_cache = {"value": False, "ts": 0}
+_maintenance_lock = threading.Lock()
 
-# ==============================================================================
-# 9. SGVIP PAYMENT FUNCTIONS
-# ==============================================================================
+def is_bot_maintenance():
+    now = time.time()
+    with _maintenance_lock:
+        if now - _maintenance_cache["ts"] < 30:
+            return _maintenance_cache["value"]
+    value = get_setting("bot_maintenance", "off") == "on"
+    with _maintenance_lock:
+        _maintenance_cache["value"] = value
+        _maintenance_cache["ts"] = now
+    return value
 
-async def create_sgvip_order(user_id: int, amount: float, order_id: str, mobile: str = "9999999999") -> Dict[str, Any]:
-    """Create an order on the SGVIP payment gateway."""
-    token = get_setting("sgvip_token", SGVIP_API_TOKEN)
-    if not token:
-        return {"status": False, "message": "SGVIP API token not configured"}
+# ============ ADMINS ============
+_admin_cache = {"ids": [], "ts": 0}
+_admin_lock = threading.Lock()
 
-    payload = {
-        "customer_mobile": mobile or "9999999999",
-        "user_token": token,
-        "amount": str(amount),
-        "order_id": order_id,
-        "redirect_url": SGVIP_REDIRECT_URL,
-        "remark1": f"Deposit for {user_id}",
-        "remark2": "Wallet Topup",
-    }
+def get_admin_ids(force=False):
+    now = time.time()
+    with _admin_lock:
+        if not force and now - _admin_cache["ts"] < 60 and _admin_cache["ids"]:
+            return list(_admin_cache["ids"])
+    ids = []
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM admins")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        ids = [r["user_id"] for r in rows]
+    except Exception as e:
+        logger.error(f"get_admin_ids error: {e}")
+    if ADMIN_USER_ID in ids:
+        ids.remove(ADMIN_USER_ID)
+    ids.insert(0, ADMIN_USER_ID)
+    with _admin_lock:
+        _admin_cache["ids"] = ids
+        _admin_cache["ts"] = now
+    return ids
 
-    async with aiohttp.ClientSession() as session:
+def invalidate_admin_cache():
+    with _admin_lock:
+        _admin_cache["ts"] = 0
+
+# BUG #12 FIX: bot username cache
+def get_bot_username():
+    now = time.time()
+    if _bot_username_cache["value"] and now - _bot_username_cache["ts"] < 3600:
+        return _bot_username_cache["value"]
+    try:
+        uname = bot.get_me().username
+    except Exception:
+        uname = "YourBot"
+    _bot_username_cache["value"] = uname
+    _bot_username_cache["ts"] = now
+    return uname
+
+# ============ HELPERS ============
+def get_category_emoji(category):
+    return {"root": "🤖", "nonroot": "📱", "iphone": "🍎"}.get(category, "📦")
+
+def get_category_name(category):
+    return {"root": "ANDROID ROOT", "nonroot": "ANDROID NON ROOT", "iphone": "IPHONE"}.get(category, category.upper())
+
+def get_priority_emoji(priority):
+    return {"low": "🟢", "normal": "🟡", "high": "🟠", "urgent": "🔴"}.get(priority, "🟡")
+
+def get_user_display_name(user_id):
+    try:
+        user_chat = bot.get_chat(user_id)
+        if user_chat.first_name:
+            return user_chat.first_name
+    except Exception:
+        pass
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT username FROM users WHERE id=?", (user_id,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if user and user["username"]:
+            return user["username"]
+    except Exception:
+        pass
+    return "User"
+
+# BUG #9 FIX: notify_admins with per-admin isolation (no long waits)
+def notify_admins(text):
+    for admin_id in get_admin_ids():
         try:
-            async with session.post(SGVIP_CREATE_ORDER_URL, data=payload) as resp:
-                try:
-                    result = await resp.json(content_type=None)
-                except Exception as e:
-                    logger.error(f"Error parsing SGVIP create-order response: {e}")
-                    return {"status": False, "message": "Failed to parse response"}
-                if resp.status != 200 and isinstance(result, dict):
-                    result.setdefault("status", False)
-                return result if isinstance(result, dict) else {"status": False, "message": "Invalid response"}
+            safe_send(admin_id, text)
         except Exception as e:
-            logger.error(f"SGVIP Create Order API Error: {e}")
-            return {"status": False, "message": str(e)}
+            logger.error(f"notify_admins fail {admin_id}: {e}")
+            
+# ============ BROADCASTS ============
+# BUG #10 FIX: batch fetch instead of loading all users in RAM
+def broadcast_maintenance_on():
+    offset = 0
+    batch_size = 500
+    text = """🔧 <b>BOT UNDER MAINTENANCE</b>
 
-async def check_sgvip_order_status(order_id: str, gateway_order_id: str = None) -> Dict[str, Any]:
-    """Check order status on the SGVIP payment gateway."""
-    token = get_setting("sgvip_token", SGVIP_API_TOKEN)
-    if not token:
-        return {"status": "ERROR", "message": "SGVIP API token not configured"}
+━━━━━━━━━━━━━━━
 
-    # Try our merchant order_id first, then the gateway's own orderId if different.
-    ids_to_try = [order_id]
-    if gateway_order_id and gateway_order_id != order_id:
-        ids_to_try.append(gateway_order_id)
+⚠️ Bot abhi maintenance mein hai.
 
-    last_result: Dict[str, Any] = {"status": "ERROR", "message": "Unknown error"}
-    async with aiohttp.ClientSession() as session:
-        for oid in ids_to_try:
-            payload = {"user_token": token, "order_id": oid}
-            try:
-                async with session.post(SGVIP_CHECK_STATUS_URL, data=payload) as resp:
-                    try:
-                        result = await resp.json(content_type=None)
-                    except Exception as e:
-                        logger.error(f"Error parsing SGVIP status response: {e}")
-                        last_result = {"status": "ERROR", "message": "Failed to parse response"}
-                        continue
-                    if not isinstance(result, dict):
-                        last_result = {"status": "ERROR", "message": "Invalid response"}
-                        continue
-                    last_result = result
-                    status_val = str(result.get("status", "")).upper()
-                    if status_val in ("COMPLETED", "SUCCESS", "PENDING", "PROCESSING", "FAILED", "EXPIRED"):
-                        return result
-            except Exception as e:
-                logger.error(f"SGVIP Check Status API Error: {e}")
-                last_result = {"status": "ERROR", "message": str(e)}
-    return last_result
+Jald hi wapas aa jayega!
 
-async def run_payment_verification(user_id: int, order_id: str, reply_target: Any) -> None:
-    """Run payment verification with the SGVIP gateway."""
-    txn = db_query("SELECT amount_inr, status, timestamp, qr_url, upi_id, expires_at FROM transactions WHERE order_id=?", (order_id,), fetchone=True)
-    if not txn:
-        err = "❌ Invalid or Fake Order ID detected in system!"
-        if isinstance(reply_target, CallbackQuery): await reply_target.answer(err, show_alert=True)
-        else: await reply_target.answer(err)
-        return
+━━━━━━━━━━━━━━━
 
-    # Check if order expired
-    if txn[5] and time.time() > txn[5] and txn[1] == 'pending':
-        db_query("UPDATE transactions SET status='expired' WHERE order_id=?", (order_id,))
-        err_msg = "⏳ <b>Order Expired!</b>\nThe payment window has expired. Please generate a new payment request."
-        if isinstance(reply_target, CallbackQuery): await reply_target.message.edit_text(err_msg, reply_markup=back_kb(), parse_mode='HTML')
-        else: await reply_target.answer(err_msg, reply_markup=back_kb())
-        return
-
-    if txn[1] == 'paid':
-        msg = "✅ This payment has already been securely credited to your wallet."
-        if isinstance(reply_target, CallbackQuery): await reply_target.answer(msg, show_alert=True)
-        else: await reply_target.answer(msg)
-        return
-    elif txn[1] == 'expired':
-        msg = "❌ This order has expired. Please create a new deposit request."
-        if isinstance(reply_target, CallbackQuery): await reply_target.answer(msg, show_alert=True)
-        else: await reply_target.answer(msg)
-        return
-
-    # Verify with SGVIP API (upi_id column stores the gateway order id)
-    result = await check_sgvip_order_status(order_id, txn[4])
-    status_val = str(result.get("status", "")).upper()
-
-    if status_val in ("COMPLETED", "SUCCESS"):
-        # Payment successful
-        txn_data = result.get("result", {}) or {}
-        utr = txn_data.get("utr", "N/A")
-        amount_received = safe_float(txn_data.get("amount"), txn[0])
-        if amount_received <= 0:
-            amount_received = txn[0]
-        payment_time = txn_data.get("date", "")
-        gateway_ref = txn_data.get("orderId", order_id)
-
-        db_query("UPDATE transactions SET status='paid' WHERE order_id=?", (order_id,))
-        db_query("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount_received, user_id))
-
-        success_msg = f"🎉 <b>PAYMENT VERIFIED!</b>\n\n✅ {fmt_curr(amount_received)} has been added to your wallet.\n🧾 UTR: <code>{utr}</code>\n🆔 Order: <code>{gateway_ref}</code>\n📅 Time: {payment_time}"
-        if isinstance(reply_target, CallbackQuery): await reply_target.message.edit_text(success_msg, reply_markup=back_kb(), parse_mode='HTML')
-        else: await reply_target.answer(success_msg, reply_markup=back_kb())
-
-        await send_advanced_notification(user_id, "DEPOSIT", amount_received, product=str(gateway_ref), gateway="SGVIP")
-        log_activity(user_id, "DEPOSIT_SUCCESS", f"Amount: {amount_received}, Gateway: SGVIP, Order: {order_id}, UTR: {utr}")
-
-    elif status_val in ("PENDING", "PROCESSING"):
-        pending_msg = f"⏳ <b>Payment Status: PENDING</b>\n\n{result.get('message', 'Payment not received yet')}\n\n<i>Please wait a moment and verify again.</i>"
-        if isinstance(reply_target, CallbackQuery): await reply_target.answer(pending_msg, show_alert=True)
-        else: await reply_target.answer(pending_msg)
-    elif status_val in ("FAILED", "EXPIRED"):
-        fail_msg = f"❌ <b>Payment Failed/Expired</b>\n\n{result.get('message', 'This order was not completed.')}\n\n<i>Please create a new deposit request.</i>"
-        if isinstance(reply_target, CallbackQuery): await reply_target.answer(fail_msg, show_alert=True)
-        else: await reply_target.answer(fail_msg)
-    else:
-        err = f"⚠️ Gateway Error: {result.get('message', 'Unknown Error')}"
-        if isinstance(reply_target, CallbackQuery): await reply_target.answer(err, show_alert=True)
-        else: await reply_target.answer(err)
-
-async def auto_verify_task() -> None:
-    """Auto-verify pending SGVIP transactions every 30 seconds."""
+⏳ Thodi der baad try karo."""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary"))
     while True:
-        await asyncio.sleep(30)  # Check every 30 seconds
-
-        token = get_setting("sgvip_token", "")
-        if not token:
-            continue
-
-        pending_txns = db_query("SELECT order_id, user_id, amount_inr, timestamp, expires_at, upi_id FROM transactions WHERE status='pending'", fetchall=True)
-        if not pending_txns: continue
-
-        for txn in pending_txns:
-            order_id, user_id, amount, ts, expires_at, gateway_order_id = txn
-
-            # Check if expired
-            if expires_at and time.time() > expires_at:
-                db_query("UPDATE transactions SET status='expired' WHERE order_id=?", (order_id,))
-                try:
-                    await bot.send_message(user_id, f"⏳ <b>Order Expired!</b>\nYour payment window for order <code>{order_id}</code> has timed out. Please generate a new payment request.", parse_mode='HTML')
-                except: pass
-                continue
-
-            # Verify with SGVIP
-            result = await check_sgvip_order_status(order_id, gateway_order_id)
-            status_val = str(result.get("status", "")).upper()
-
-            if status_val in ("COMPLETED", "SUCCESS"):
-                txn_data = result.get("result", {}) or {}
-                amount_received = safe_float(txn_data.get("amount"), amount)
-                if amount_received <= 0:
-                    amount_received = amount
-                utr = txn_data.get("utr", "N/A")
-                gateway_ref = txn_data.get("orderId", order_id)
-
-                db_query("UPDATE transactions SET status='paid' WHERE order_id=?", (order_id,))
-                db_query("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount_received, user_id))
-
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"✨ <b>AUTO-VERIFIED!</b>\n\n✅ Your payment of {fmt_curr(amount_received)} was detected successfully!\n🧾 UTR: <code>{utr}</code>\n🆔 Order: <code>{gateway_ref}</code>",
-                        parse_mode='HTML'
-                    )
-                except: pass
-
-                await send_advanced_notification(user_id, "DEPOSIT", amount_received, product=str(gateway_ref), gateway="SGVIP Auto")
-                log_activity(user_id, "DEPOSIT_AUTO_SUCCESS", f"Amount: {amount_received}, Gateway: SGVIP Auto, Order: {order_id}, UTR: {utr}")
-
-# ==============================================================================
-# 10. ONBOARDING & START
-# ==============================================================================
-@dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
-    try: await message.answer_sticker(WELCOME_STICKER_ID)
-    except: pass 
-    
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith("v_"):
-        order_id = args[1].split("v_")[1]
-        msg = await message.answer("🔄 <b>Verifying your payment securely...</b>\n<i>Connecting to gateway...</i>", parse_mode='HTML')
-        await run_payment_verification(message.from_user.id, order_id, msg)
-        return
-
-
-    user = db_query("SELECT phone FROM users WHERE user_id=?", (message.from_user.id,), fetchone=True)
-    current_username = message.from_user.username or ""
-    db_query("UPDATE users SET username=? WHERE user_id=?", (current_username, message.from_user.id))
-
-    if not user or not user[0]:
-        db_query("INSERT OR IGNORE INTO users (user_id, first_name, username, joined_date) VALUES (?, ?, ?, ?)",
-                 (message.from_user.id, message.from_user.first_name, current_username, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        log_activity(message.from_user.id, "ACCOUNT_CREATED")
-
-    log_activity(message.from_user.id, "CMD_START")
-    await send_main_menu(message)
-
-async def send_main_menu(ctx: Any):
-    text = get_ui_text("start_menu")
-    kb = main_menu_kb(ctx.from_user.id)
-    if isinstance(ctx, Message): 
-        await ctx.answer(text, reply_markup=kb, parse_mode='HTML')
-    else: 
-        await ctx.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "back_main")
-async def back_main(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    log_activity(call.from_user.id, "RETURN_MAIN_MENU")
-    await send_main_menu(call)
-
-# ==============================================================================
-# 11. ADD BALANCE
-# ==============================================================================
-@dp.callback_query(F.data == "menu_add_balance")
-async def select_gateway_menu(call: CallbackQuery):
-    log_activity(call.from_user.id, "VIEW_ADD_BALANCE")
-    text = get_ui_text("add_balance_menu")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="UPI PAY", callback_data="gateway_inr", icon_custom_emoji_id=get_emoji_icon("upi"), style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")
-        ]
-    ])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-# ==============================================================================
-# 12. SGVIP UPI PAYMENT FLOW
-# ==============================================================================
-@dp.callback_query(F.data == "gateway_inr")
-async def add_balance_inr(call: CallbackQuery):
-    text = f"💵 <b>— UPI DEPOSIT —</b> 💵\n\nSelect amount to deposit:"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="₹50", callback_data="pay_50", style="primary"), InlineKeyboardButton(text="₹100", callback_data="pay_100", style="primary")],
-        [InlineKeyboardButton(text="₹200", callback_data="pay_200", style="primary"), InlineKeyboardButton(text="₹500", callback_data="pay_500", style="primary")],
-        [InlineKeyboardButton(text="₹1000", callback_data="pay_1000", style="primary"), InlineKeyboardButton(text="₹2000", callback_data="pay_2000", style="primary")],
-        [InlineKeyboardButton(text="✏️ Custom Amount", callback_data="custom_deposit_keypad", style="primary")],
-        [InlineKeyboardButton(text="Back", callback_data="menu_add_balance", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "custom_deposit_keypad")
-async def show_custom_keypad(call: CallbackQuery, state: FSMContext):
-    await state.set_state(UserStates.custom_amount_input)
-    await state.update_data(amount_str="0")
-    await show_keypad(call.message)
-
-async def show_keypad(message: Message, amount_str: str = "0"):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="      1      ", callback_data="kp_1", style="primary"), InlineKeyboardButton(text="      2      ", callback_data="kp_2", style="primary"), InlineKeyboardButton(text="      3      ", callback_data="kp_3", style="primary")],
-        [InlineKeyboardButton(text="      4      ", callback_data="kp_4", style="primary"), InlineKeyboardButton(text="      5      ", callback_data="kp_5", style="primary"), InlineKeyboardButton(text="      6      ", callback_data="kp_6", style="primary")],
-        [InlineKeyboardButton(text="      7      ", callback_data="kp_7", style="primary"), InlineKeyboardButton(text="      8      ", callback_data="kp_8", style="primary"), InlineKeyboardButton(text="      9      ", callback_data="kp_9", style="primary")],
-        [InlineKeyboardButton(text="    ⌫    ", callback_data="kp_backspace", style="danger"), InlineKeyboardButton(text="      0      ", callback_data="kp_0", style="primary"), InlineKeyboardButton(text="    C    ", callback_data="kp_clear", style="danger")],
-        [InlineKeyboardButton(text=f"✅ Confirm (₹{amount_str})", callback_data="kp_confirm", style="success")],
-        [InlineKeyboardButton(text="Cancel", callback_data="gateway_inr", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    text = f"💵 <b>Enter Amount (₹):</b>\n\nCurrent: ₹{amount_str}"
-    await message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("kp_"), UserStates.custom_amount_input)
-async def keypad_handler(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    amount_str = data.get("amount_str", "0")
-    action = call.data.split("_")[1]
-    if action == "confirm":
-        if amount_str == "0":
-            await call.answer("Amount cannot be zero.", show_alert=True)
-            return
         try:
-            amount = float(amount_str)
-            if amount < 1:
-                await call.answer("Minimum deposit is ₹1.", show_alert=True)
-                return
-            await state.clear()
-            await call.message.edit_text("⏳ <b>Creating Payment Order...</b>", parse_mode='HTML')
-            await generate_sgvip_order(call.from_user.id, amount, call.message)
-        except ValueError:
-            await call.answer("Invalid amount.", show_alert=True)
-        return
-    if action == "backspace":
-        if len(amount_str) > 1: amount_str = amount_str[:-1]
-        else: amount_str = "0"
-    elif action == "clear":
-        amount_str = "0"
-    else:
-        if amount_str == "0": amount_str = action
-        else: amount_str += action
-        if len(amount_str) > 6: amount_str = amount_str[:6]
-    await state.update_data(amount_str=amount_str)
-    await show_keypad(call.message, amount_str)
-    await call.answer()
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE banned=0 LIMIT ? OFFSET ?", (batch_size, offset))
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            if not rows:
+                break
+            for user in rows:
+                try:
+                    safe_send(user["id"], text, markup)
+                except Exception as e:
+                    logger.warning(f"maintenance broadcast fail {user['id']}: {e}")
+                time.sleep(BROADCAST_DELAY)
+            offset += batch_size
+            if len(rows) < batch_size:
+                break
+        except Exception as e:
+            logger.error(f"broadcast_maintenance_on error: {e}")
+            break
 
-@dp.callback_query(F.data.startswith("pay_"))
-async def process_sgvip_payment_callback(call: CallbackQuery):
-    inr_amount = float(call.data.split("_")[1])
-    await call.message.edit_text("⏳ <b>Creating Payment Order...</b>", parse_mode='HTML')
-    await generate_sgvip_order(call.from_user.id, inr_amount, call.message)
+def broadcast_maintenance_off():
+    offset = 0
+    batch_size = 500
+    text = """🎉 <b>BOT WAPAS AA GAYA!</b> 🎉
 
-async def generate_sgvip_order(user_id: int, inr_amount: float, message_obj: Message) -> None:
-    """Create an SGVIP payment order and show the payment link."""
-    token = get_setting("sgvip_token", "")
-    if not token:
-        return await message_obj.edit_text("⚠️ Payment Gateway is currently offline. Admin needs to set the API Token.", reply_markup=back_kb("gateway_inr"), parse_mode='HTML')
+━━━━━━━━━━━━━━━
 
-    current_time = int(time.time())
-    order_id = f"SGVIP{user_id}{current_time}"
+✅ Maintenance khatam ho gaya!
 
-    # Fetch user's mobile number for the gateway (falls back to a dummy if missing)
-    user_row = db_query("SELECT phone FROM users WHERE user_id=?", (user_id,), fetchone=True)
-    mobile = user_row[0] if user_row and user_row[0] else "9999999999"
+Ab aap phir se shopping kar sakte ho.
 
-    # Create order on SGVIP
-    result = await create_sgvip_order(user_id, inr_amount, order_id, mobile)
+━━━━━━━━━━━━━━━
 
-    status_ok = result.get("status")
-    if status_ok is not True and str(status_ok).lower() not in ("true", "success"):
-        error_msg = result.get("message", "Unknown error")
-        return await message_obj.edit_text(f"❌ <b>Gateway Error:</b> {error_msg}", reply_markup=back_kb("gateway_inr"), parse_mode='HTML')
-
-    data = result.get("result", {}) or {}
-    payment_url = data.get("payment_url")
-    gateway_order_id = str(data.get("orderId", order_id))
-
-    if not payment_url:
-        return await message_obj.edit_text("❌ <b>Gateway Error:</b> Payment link was not generated. Please try again.", reply_markup=back_kb("gateway_inr"), parse_mode='HTML')
-
-    # Order is valid for 30 minutes
-    expires_timestamp = int(time.time() + SGVIP_ORDER_TIMEOUT_MINUTES * 60)
-    expires_at_str = (datetime.now() + timedelta(minutes=SGVIP_ORDER_TIMEOUT_MINUTES)).strftime("%d-%m-%Y %H:%M:%S")
-    created_at = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-
-    # Save transaction (qr_url stores the payment link, upi_id stores the gateway order id)
-    db_query("INSERT INTO transactions (order_id, user_id, amount_inr, status, timestamp, qr_url, upi_id, expires_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
-             (order_id, user_id, inr_amount, current_time, payment_url, gateway_order_id, expires_timestamp))
-
-    # Payment link + verify buttons
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Pay Now", url=payment_url, style="success")],
-        [InlineKeyboardButton(text="🔄 Verify Payment", callback_data=f"verify_{order_id}", style="primary")],
-        [InlineKeyboardButton(text="Cancel Transaction", callback_data="menu_add_balance", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-
-    text = (
-        f"🧾 <b>PAYMENT ORDER CREATED</b>\n\n"
-        f"💵 <b>Amount:</b> {fmt_curr(inr_amount)}\n"
-        f"🆔 <b>Order ID:</b> <code>{order_id}</code>\n"
-        f"⏳ <b>Expires:</b> {expires_at_str}\n"
-        f"📅 <b>Created:</b> {created_at}\n\n"
-        f"📱 <b>How to Pay:</b>\n"
-        f"1️⃣ Tap <b>Pay Now</b> to open the payment page\n"
-        f"2️⃣ Complete the payment of {fmt_curr(inr_amount)}\n"
-        f"3️⃣ Click <b>Verify Payment</b> after paying\n"
-        f"4️⃣ Auto-verify will also detect your payment!"
-    )
-
-    log_activity(user_id, "GENERATE_INVOICE_SGVIP", f"Amount: {inr_amount}, Order ID: {order_id}")
-    await message_obj.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("verify_"))
-async def manual_verify_callback(call: CallbackQuery):
-    order_id = call.data.split("_", 1)[1]
-    await run_payment_verification(call.from_user.id, order_id, call)
-
-# ==============================================================================
-# 13. BINANCE CRYPTO PAYMENT
-# ==============================================================================
-@dp.callback_query(F.data == "gateway_crypto")
-async def add_balance_crypto(call: CallbackQuery, state: FSMContext):
-    address_check = db_query("SELECT value FROM settings WHERE key='binance_address'", fetchone=True)
-    if not address_check or not address_check[0]:
-        return await call.message.edit_text("⚠️ Binance Gateway is currently offline. Admin has not set a deposit address.", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
-    deposit_address = address_check[0]
-    msg = (f"🪙 <b>— BINANCE USDT DEPOSIT —</b> 🪙\n\n💵 <b>Exchange Rate:</b> 1 USDT = ₹{USDT_TO_INR}\n⚠️ <b>Network:</b> Please send via <b>TRC20</b> or <b>BEP20</b>.\n\n👇 <b>Send your USDT to this exact address:</b>\n<code>{deposit_address}</code>\n\n━━━━━━━━━━━━━━━━━━\n✅ <b>After sending the USDT, reply to this message with your exact TxID (Transaction Hash) to instantly claim your balance.</b>")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Cancel", callback_data="menu_add_balance", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]])
-    await call.message.edit_text(msg, reply_markup=kb, parse_mode='HTML')
-    await state.set_state(UserStates.wait_for_crypto_txid)
-
-@dp.message(UserStates.wait_for_crypto_txid)
-async def process_crypto_txid(m: Message, state: FSMContext):
-    txid = m.text.strip()
-    user_id = m.from_user.id
-    if len(txid) < 10: return await m.answer("❌ That doesn't look like a valid TxID. Please try again.")
-    if db_query("SELECT txid FROM crypto_txns WHERE txid=?", (txid,), fetchone=True):
-        return await m.answer("⚠️ This Transaction ID has already been claimed in the system!", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
-    api_key_check = db_query("SELECT value FROM settings WHERE key='binance_api'", fetchone=True)
-    secret_key_check = db_query("SELECT value FROM settings WHERE key='binance_secret'", fetchone=True)
-    if not api_key_check or not secret_key_check:
-        return await m.answer("⚠️ Binance API is missing on the server. Contact Support.", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
-    await m.answer("🔄 <b>Verifying your TxID with Binance Blockchain...</b>\n<i>This may take up to 30 seconds...</i>", parse_mode='HTML')
-    api_key = api_key_check[0]; secret_key = secret_key_check[0]
-    timestamp = int(time.time() * 1000)
-    query_string = f"timestamp={timestamp}"
-    signature = hmac.new(secret_key.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
-    headers = {'X-MBX-APIKEY': api_key}
-    url = f"https://api.binance.com/sapi/v1/capital/deposit/hisrec?{query_string}&signature={signature}"
-    async with aiohttp.ClientSession() as session:
+🚀 Tap Shop Now to Start!"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("🔑 Shop Key", callback_data="shop_now", style="danger"))
+    while True:
         try:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    try: history = await resp.json(content_type=None)
-                    except: history = []
-                    found = False
-                    for deposit in history:
-                        if deposit.get("txId") == txid and deposit.get("status") == 1:
-                            found = True
-                            usdt_amount = float(deposit.get("amount"))
-                            inr_amount = usdt_amount * USDT_TO_INR
-                            db_query("INSERT INTO crypto_txns (txid, user_id, amount_usdt, timestamp) VALUES (?, ?, ?, ?)", (txid, user_id, usdt_amount, int(time.time())))
-                            db_query("UPDATE users SET balance = balance + ? WHERE user_id=?", (inr_amount, user_id))
-                            await m.answer(f"🎉 <b>CRYPTO DEPOSIT SUCCESSFUL!</b>\n\n✅ We safely received <b>{usdt_amount} USDT</b>.\n💰 <b>{fmt_curr(inr_amount)}</b> has been added to your balance!", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-                            await send_advanced_notification(user_id, "DEPOSIT", inr_amount, product=txid, gateway="Binance Crypto")
-                            log_activity(user_id, "CRYPTO_DEPOSIT", f"TxID: {txid}, Amount: {inr_amount}")
-                            await state.clear()
-                            break
-                    if not found: await m.answer("❌ <b>TxID Not Found or Still Pending!</b>\nMake sure the transaction is fully confirmed. Try again in 5 mins.", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
-                else: await m.answer(f"⚠️ <b>Binance Server Error:</b> HTTP {resp.status}.", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
-        except Exception as e: await m.answer(f"⚠️ <b>Connection Error:</b> {str(e)}", reply_markup=back_kb("menu_add_balance"), parse_mode='HTML')
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE banned=0 LIMIT ? OFFSET ?", (batch_size, offset))
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            if not rows:
+                break
+            for user in rows:
+                try:
+                    safe_send(user["id"], text, markup)
+                except Exception as e:
+                    logger.warning(f"maintenance-off broadcast fail {user['id']}: {e}")
+                time.sleep(BROADCAST_DELAY)
+            offset += batch_size
+            if len(rows) < batch_size:
+                break
+        except Exception as e:
+            logger.error(f"broadcast_maintenance_off error: {e}")
+            break
 
-# ==============================================================================
-# 14. SHOP – with uppercase categories and new point_down emoji
-# ==============================================================================
-@dp.callback_query(F.data == "menu_shop")
-async def view_shop_panels(call: CallbackQuery):
-    log_activity(call.from_user.id, "VIEW_SHOP")
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    text = f"{get_emoji('product_store')} <b><u>SELECT PRODUCT PANEL</u></b>\n━━━━━━━━━━━━━━━━━━\n\n{get_emoji('point_down')} <b>Choose a panel to view its packages:</b>"
-    for cat in FIXED_CATEGORIES:
-        count = db_query("SELECT COUNT(*) FROM products WHERE category LIKE ? AND is_active=1", (cat + '%',), fetchone=True)[0]
-        emoji_id = get_category_emoji(cat)
-        kb.inline_keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"cat_{cat[:30]}", icon_custom_emoji_id=emoji_id, style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("cat_"))
-async def view_panel_names(call: CallbackQuery):
-    category = call.data.split("cat_", 1)[1]
-    panel_names = db_query("SELECT DISTINCT panel_name FROM products WHERE category LIKE ? AND is_active=1 AND panel_name != ''", (category + '%',), fetchall=True)
-    if not panel_names:
-        prods = db_query("SELECT id, name, price_inr, stock, reseller_price, validity, device_limit, product_pid, duration_string FROM products WHERE category LIKE ? AND is_active=1", (category + '%',), fetchall=True)
-        if not prods: return await call.answer("❌ No products available in this category yet.", show_alert=True)
-        await show_products_for_panel(call, prods, category)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    text = f"{get_emoji('product_store')} <b><u>{category.upper()} PANELS</u></b>\n━━━━━━━━━━━━━━━━━━\n\n{get_emoji('point_down')} <b>Choose a panel name:</b>"
-    for pn in panel_names:
-        panel = pn[0]
-        emoji_id = get_panel_emoji(panel) or get_emoji_icon("product_store")
-        kb.inline_keyboard.append([InlineKeyboardButton(text=panel, callback_data=f"pnl_{category[:30]}_{panel[:30]}", icon_custom_emoji_id=emoji_id, style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="BACK TO PANELS", callback_data="menu_shop", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("pnl_"))
-async def view_products_for_panel(call: CallbackQuery):
-    parts = call.data.split("pnl_", 1)[1].split("_", 1)
-    if len(parts) != 2: return await call.answer("Invalid selection.", show_alert=True)
-    category, panel_name = parts[0], parts[1]
-    prods = db_query("SELECT id, name, price_inr, stock, reseller_price, validity, device_limit, product_pid, duration_string FROM products WHERE category LIKE ? AND panel_name LIKE ? AND is_active=1", (category + '%', panel_name + '%'), fetchall=True)
-    if not prods: return await call.answer("No products found for this panel.", show_alert=True)
-    await show_products_for_panel(call, prods, f"{category} - {panel_name}")
-
-async def show_products_for_panel(call: CallbackQuery, prods: List[Tuple], header: str):
-    user = db_query("SELECT is_reseller, is_vip FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    is_reseller = bool(user[0]) if user else False
-    is_vip = bool(user[1]) if user else False
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    text = f"{get_emoji('product_store')} <b><u>{header.upper()} PACKAGES</u></b>\n━━━━━━━━━━━━━━━━━━\n\n"
-    for p in prods:
-        prod_id, package_name, normal_price, stock, reseller_price, validity, device = p[:7]
-        product_pid = p[7] if len(p) > 7 else ""
-        duration_string = p[8] if len(p) > 8 else ""
-        stock = stock or 0
-        normal_price = safe_float(normal_price)
-        reseller_price = safe_float(reseller_price)
-        base_price = reseller_price if is_reseller else normal_price
-        if is_vip: display_price = base_price - (base_price * (VIP_DISCOUNT_PERCENTAGE / 100))
-        else: display_price = base_price
-        # Per-product check: a package is buyable if it has local stock OR a valid live API binding.
-        api_ready = product_api_ready(product_pid, duration_string)
-        if stock > 0:
-            stock_status = "✅ In Stock"
-        elif api_ready:
-            stock_status = "⚡ Live API Available"
-        else:
-            stock_status = "❌ Out of Stock"
-        text += f"{get_emoji('product_store')} ⏱ <b>Validity: {package_name}</b>\n"
-        if is_reseller or is_vip:
-            text += f"💰 Regular Price: <s>{fmt_curr(normal_price)}</s>\n"
-            if is_reseller and not is_vip: text += f"👑 <b>Reseller Price: {fmt_curr(display_price)}</b>\n"
-            elif is_vip and not is_reseller: text += f"🌟 <b>VIP Price: {fmt_curr(display_price)}</b>\n"
-            else: text += f"👑🌟 <b>Super Price: {fmt_curr(display_price)}</b>\n"
-        else: text += f"💰 Price: {fmt_curr(normal_price)}\n"
-        text += f"📱 Limit: {device} | 📦 {stock_status}\n\n"
-        if stock > 0 or api_ready:
-            # Never show "(Out of Stock)" when a live API binding exists.
-            kb.inline_keyboard.append([InlineKeyboardButton(text=f"Buy {package_name} - {fmt_curr(display_price)}", callback_data=f"buy_{prod_id}", icon_custom_emoji_id=get_emoji_icon("product_store"), style="success")])
-        else:
-            kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ {package_name} (Out of Stock)", callback_data="ignore_stock_click", style="danger")])
-    text += f"{get_emoji('point_down')} <b>Select package below to instantly purchase:</b>"
-    kb.inline_keyboard.append([InlineKeyboardButton(text="BACK TO PANELS", callback_data="menu_shop", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "ignore_stock_click")
-async def ignore_stock_click(call: CallbackQuery):
-    await call.answer("⚠️ This duration is completely Out of Stock! Admins have been notified to refill.", show_alert=True)
-
-@dp.callback_query(F.data.startswith("buy_"))
-async def process_buy(call: CallbackQuery, state: FSMContext):
-    prod_id = int(call.data.split("_")[1])
-    prod = db_query("SELECT name, price_inr, stock, apk_link, validity, device_limit, category, reseller_price, panel_name, key_type FROM products WHERE id=?", (prod_id,), fetchone=True)
-    user = db_query("SELECT balance, is_reseller, total_saved, is_vip FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    if not prod: return await call.answer("❌ Critical Error: Item not found in DB!", show_alert=True)
-    if not user: return await call.answer("❌ User profile not found. Please /start again.", show_alert=True)
-    normal_price = safe_float(prod[1])
-    reseller_price = safe_float(prod[7])
-    is_reseller = bool(user[1]); is_vip = bool(user[3])
-    base_price = reseller_price if is_reseller else normal_price
-    final_price = base_price - (base_price * (VIP_DISCOUNT_PERCENTAGE / 100)) if is_vip else base_price
-    if user[0] < final_price:
-        return await call.answer(f"❌ Insufficient Balance! You need {fmt_curr(final_price)}.\nPlease Top Up your wallet.", show_alert=True)
-
-    # V1 / Device-Lock products need an android_id before a live API purchase.
-    if str(prod[9] or "V2").upper() == "V1":
-        await state.update_data(pending_buy_prod=prod_id)
-        await state.set_state(UserStates.wait_for_android_id)
-        await call.message.edit_text(
-            "📱 <b>Device-Lock Product</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "This package requires a <b>Device / Android ID</b> to generate your license.\n\n"
-            "Please send your <b>Android ID</b> now (or type <code>skip</code> to try without it):",
-            reply_markup=back_kb("menu_shop"), parse_mode='HTML'
-        )
-        return
-
-    await call.answer()
-    await finalize_purchase(call.message, call.from_user.id, prod_id, android_id=None)
-
-
-@dp.message(UserStates.wait_for_android_id)
-async def process_android_id(m: Message, state: FSMContext):
-    data = await state.get_data()
-    prod_id = data.get("pending_buy_prod")
-    await state.clear()
-    if not prod_id:
-        return await m.answer("❌ Session expired. Please open the shop again.", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-    android_id = None if m.text.strip().lower() == "skip" else m.text.strip()
-    await finalize_purchase(m, m.from_user.id, prod_id, android_id=android_id)
-
-
-async def finalize_purchase(target_message: Message, user_id: int, prod_id: int, android_id: Optional[str] = None):
-    """
-    Secure a key FIRST (local vault -> API fallback), then deduct balance.
-    If fulfilment fails, the user is NOT charged.
-    """
-    prod = db_query(
-        "SELECT name, price_inr, stock, apk_link, validity, device_limit, category, reseller_price, panel_name, key_type "
-        "FROM products WHERE id=?", (prod_id,), fetchone=True)
-    user = db_query("SELECT balance, is_reseller, total_saved, is_vip FROM users WHERE user_id=?", (user_id,), fetchone=True)
-    if not prod or not user:
-        return await target_message.edit_text("❌ Critical Error: Product/User not found.", reply_markup=back_kb("menu_shop"), parse_mode='HTML')
-
-    normal_price = safe_float(prod[1])
-    reseller_price = safe_float(prod[7])
-    is_reseller = bool(user[1]); is_vip = bool(user[3])
-    base_price = reseller_price if is_reseller else normal_price
-    final_price = base_price - (base_price * (VIP_DISCOUNT_PERCENTAGE / 100)) if is_vip else base_price
-    savings = normal_price - final_price
-    if user[0] < final_price:
-        return await target_message.edit_text(f"❌ <b>Insufficient Balance!</b>\nYou need {fmt_curr(final_price)}.", reply_markup=back_kb("menu_shop"), parse_mode='HTML')
-
-    # ---- 2-TIER FULFILLMENT (keys secured BEFORE any balance deduction) ----
-    result = await fulfill_keys(prod_id, 1, android_id=android_id)
-    if not result.get("success"):
-        # Nothing was charged: fulfilment happens before deduction, so the
-        # wallet is already intact. We still surface the exact refund wording.
-        log_activity(user_id, "PURCHASE_FAILED", f"Product ID {prod_id}: {result.get('error')}")
-        fail_msg = (
-            "❌ <b>Stock currently unavailable. Amount refunded.</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "We could not secure a license key right now.\n\n"
-            f"📦 <b>Package:</b> {prod[0]}\n"
-            f"⚠️ <b>Reason:</b> {result.get('error')}\n\n"
-            f"💳 <b>Your balance is safe:</b> {fmt_curr(user[0])} (no amount was deducted)\n"
-            f"Please try again later or contact: {ADMIN_CONTACT}"
-        )
-        return await target_message.edit_text(fail_msg, reply_markup=back_kb("menu_shop"), parse_mode='HTML')
-
-    delivered_keys = result["keys"]
-    delivered_key = "\n".join(delivered_keys)
-    source = result.get("source", "LOCAL")
-    product_full_name = f"{prod[6]} - {prod[8]} ({prod[0]})"
-
-    # ---- Deduct balance only after successful fulfilment ----
-    charged = False
+# ============ BACKGROUND WORKERS ============
+def verify_fampay_payment(order_id):
+    verify_url = f"{FAMPAY_VERIFY_URL}?order_id={order_id}&api_key={FAMPAY_API_KEY}"
     try:
-        db_query("UPDATE users SET balance=?, spent=spent+?, orders_count=orders_count+1, total_saved=total_saved+? WHERE user_id=?",
-                 (user[0] - final_price, final_price, savings, user_id))
-        charged = True
-        db_query("INSERT INTO orders (user_id, product_name, price_paid, delivered_key, purchase_date, source, api_order_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 (user_id, product_full_name, final_price, delivered_key, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), source, result.get("api_order_id", "")))
-        log_activity(user_id, "PURCHASE_SUCCESS", f"Product: {product_full_name}, Paid: {final_price}, Source: {source}")
-        await send_advanced_notification(user_id, "ORDER", final_price, product=product_full_name, key=delivered_key)
+        req = urllib.request.Request(verify_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res = json.loads(response.read().decode())
+        return str(res.get("status", "")).lower() == "success"
     except Exception as e:
-        logger.error(f"Post-payment failure for user {user_id}: {e}")
-        if charged:
-            refund_balance(user_id, final_price, savings)
-        return await target_message.edit_text(
-            "❌ <b>Stock currently unavailable. Amount refunded.</b>\n"
-            f"Your balance has been restored. Please contact: {ADMIN_CONTACT}",
-            reply_markup=back_kb("menu_shop"), parse_mode='HTML')
+        logger.warning(f"verify_fampay_payment error: {e}")
+        return False
 
-    source_label = {"LOCAL": "🔐 Local Vault", "API": "⚡ Live API", "LOCAL+API": "🔐⚡ Vault + Live API"}.get(source, source)
-    msg = (f"✅ <b>PURCHASE SUCCESSFUL!</b>\n━━━━━━━━━━━━━━━━━━\n"
-           f"📦 <b>Panel:</b> {prod[6]}\n📁 <b>Panel Name:</b> {prod[8]}\n⏱ <b>Package:</b> {prod[0]}\n"
-           f"💸 <b>Amount Deducted:</b> {fmt_curr(final_price)}\n📱 <b>Device Limit:</b> {prod[5]}\n"
-           f"🚀 <b>Delivered From:</b> {source_label}\n━━━━━━━━━━━━━━━━━━\n")
-    if prod[3] and prod[3].startswith("http"):
-        msg += f"📥 <b>APK Link:</b> <a href='{prod[3]}'>Click Here to Download</a>\n\n"
-    msg += f"🔑 <b>Your Exclusive Key:</b>\n<code>{delivered_key}</code>\n\n<i>For any issues or guide, tap Support or contact: {ADMIN_CONTACT}</i>"
-    await target_message.edit_text(msg, reply_markup=back_kb("menu_shop"), disable_web_page_preview=True, parse_mode='HTML')
-
-# ==============================================================================
-# 15. USER DASHBOARD, FILES, VIP, RESELLER, ORDERS, PROFILE
-# ==============================================================================
-
-@dp.callback_query(F.data == "menu_vip_dash")
-async def vip_dashboard(call: CallbackQuery):
-    u = db_query("SELECT balance, is_vip, vip_since FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    is_vip = bool(u[1])
-    status_str = "🟢 Active (Lifetime)" if is_vip else "🔴 Not Subscribed"
-    text = get_ui_text("vip_menu", vip_status=status_str)
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    if is_vip:
-        text += f"\n📅 <b>Member Since:</b> {u[2]}\n\nEnjoy your permanent 15% discount!"
-    else:
-        text += f"\n\n💳 <b>Your Current Balance:</b> {fmt_curr(u[0])}\n"
-        if u[0] >= VIP_PRICE_INR: kb.inline_keyboard.append([InlineKeyboardButton(text=f"✅ Purchase VIP for {fmt_curr(VIP_PRICE_INR)}", callback_data="execute_vip_upgrade", style="success")])
-        else:
-            kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ Need {fmt_curr(VIP_PRICE_INR)} to Upgrade", callback_data="ignore_stock_click", style="danger")])
-            kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Add Balance Now", callback_data="menu_add_balance", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "execute_vip_upgrade")
-async def execute_vip_upgrade(call: CallbackQuery):
-    u = db_query("SELECT balance, is_vip FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    if u[1]: return await call.answer("⚠️ You are already a VIP Member!", show_alert=True)
-    if u[0] < VIP_PRICE_INR: return await call.answer(f"❌ Your balance dropped below {VIP_PRICE_INR}.", show_alert=True)
-    new_balance = u[0] - VIP_PRICE_INR
-    now_date = datetime.now().strftime("%Y-%m-%d")
-    db_query("UPDATE users SET balance=?, is_vip=1, vip_since=? WHERE user_id=?", (new_balance, now_date, call.from_user.id))
-    log_activity(call.from_user.id, "UPGRADED_VIP")
-    try: await bot.send_message(ADMIN_ID, f"🌟 <b>NEW VIP UPGRADE</b>\n👤 User ID: <code>{call.from_user.id}</code>", parse_mode='HTML')
-    except: pass
-    await call.answer("🎉 Upgrade Successful! You are now a VIP Member.", show_alert=True)
-    await vip_dashboard(call)
-
-@dp.callback_query(F.data == "menu_reseller_dash")
-async def reseller_dashboard(call: CallbackQuery):
-    u = db_query("SELECT balance, is_reseller, reseller_since, total_saved FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    status_check = db_query("SELECT value FROM settings WHERE key='reseller_system_status'", fetchone=True)
-    system_status = status_check[0] if status_check else "ON"
-    setup_fee = safe_float(get_setting("reseller_setup_fee", "200.0"))
-    min_balance = safe_float(get_setting("reseller_min_balance", "500.0"))
-    if u[1]: 
-        text = (f"{get_emoji('shield_icon')} <b><u>— RESELLER DASHBOARD —</u></b> {get_emoji('shield_icon')}\n\n🟢 <b>Status:</b> Active\n📅 <b>Since:</b> {u[2]}\n{get_emoji('money_icon')} <b>Total Saved:</b> {fmt_curr(u[3])}\n\n🎉 You are enjoying exclusive wholesale prices on all products!")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]])
-        await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-        return
-    if system_status == "OFF": return await call.answer("⚠️ Wholesale / Reseller registrations are currently closed by Admin.", show_alert=True)
-    text = (f"⚡ <b><u>— BECOME A RESELLER —</u></b> ⚡\n\nUpgrade your account to access wholesale <b>Reseller Prices</b>!\n\n📋 <b>Requirements to Upgrade:</b>\n1️⃣ Must have a minimum balance of <b>{fmt_curr(min_balance)}</b>.\n2️⃣ A one-time setup fee of <b>{fmt_curr(setup_fee)}</b> will be deducted.\n\n💳 <b>Your Current Balance:</b> {fmt_curr(u[0])}\n")
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    if u[0] >= min_balance: kb.inline_keyboard.append([InlineKeyboardButton(text=f"✅ Pay {fmt_curr(setup_fee)} & Become Reseller", callback_data="execute_reseller_upgrade", style="success")])
-    else:
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ Insufficient Balance (Need {fmt_curr(min_balance)})", callback_data="ignore_stock_click", style="danger")])
-        kb.inline_keyboard.append([InlineKeyboardButton(text="💳 Add Balance", callback_data="menu_add_balance", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "execute_reseller_upgrade")
-async def execute_reseller_upgrade(call: CallbackQuery):
-    setup_fee = safe_float(get_setting("reseller_setup_fee", "200.0"))
-    min_balance = safe_float(get_setting("reseller_min_balance", "500.0"))
-    u = db_query("SELECT balance, is_reseller FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    if u[1]: return await call.answer("⚠️ You are already a Reseller!", show_alert=True)
-    if u[0] < min_balance: return await call.answer(f"❌ Your balance dropped below {fmt_curr(min_balance)}. Please top up.", show_alert=True)
-    new_balance = u[0] - setup_fee
-    db_query("UPDATE users SET balance=?, is_reseller=1, reseller_since=?, account_type='Reseller' WHERE user_id=?", (new_balance, datetime.now().strftime("%Y-%m-%d"), call.from_user.id))
-    log_activity(call.from_user.id, "UPGRADED_RESELLER")
-    try: await bot.send_message(ADMIN_ID, f"👑 <b>NEW RESELLER UPGRADE</b>\n👤 User ID: <code>{call.from_user.id}</code>", parse_mode='HTML')
-    except: pass
-    await call.answer("🎉 Upgrade Successful! Welcome to the Reseller tier.", show_alert=True)
-    await reseller_dashboard(call)
-
-@dp.callback_query(F.data == "menu_orders")
-async def my_orders(call: CallbackQuery):
-    orders = db_query("SELECT product_name, delivered_key, purchase_date, price_paid FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10", (call.from_user.id,), fetchall=True)
-    if not orders: return await call.message.edit_text("🧾 You haven't made any purchases yet. Your vault is empty.", reply_markup=back_kb(), parse_mode='HTML')
-    text = "🧾 <b><u>— YOUR RECENT ORDERS (LAST 10) —</u></b> 🧾\n\n"
-    for o in orders: text += f"📦 <b>{o[0]}</b> ({fmt_curr(o[3])})\n🔑 <code>{o[1]}</code>\n📅 <i>{o[2]}</i>\n━━━━━━━━━━━━━━━━\n"
-    await call.message.edit_text(text, reply_markup=back_kb(), parse_mode='HTML')
-
-@dp.callback_query(F.data == "menu_profile")
-async def show_profile(call: CallbackQuery):
-    u = db_query("SELECT user_id, first_name, account_type, balance, orders_count, spent, joined_date, is_reseller, reseller_since, total_saved, is_vip FROM users WHERE user_id=?", (call.from_user.id,), fetchone=True)
-    acc_type_display = []
-    if u[7]: acc_type_display.append(f"{get_emoji('reseller')} Reseller")
-    if u[10]: acc_type_display.append(f"{get_emoji('vip')} VIP")
-    type_str = " | ".join(acc_type_display) if acc_type_display else f"{get_emoji('regular_user')} Regular User"
-    text = (
-        f"{get_emoji('grid_id')} <b><u>— YOUR SECURE PROFILE —</u></b> {get_emoji('grid_id')}\n\n"
-        f"{get_emoji('grid_id')} <b>Grid ID:</b> <code>{u[0]}</code>\n"
-        f"{get_emoji('name')} <b>Name:</b> {u[1]}\n"
-        f"{get_emoji('account_level')} <b>Account Level:</b> {type_str}\n\n"
-        f"{get_emoji('wallet_left')} <b>— Wallet —</b> {get_emoji('wallet_right')}\n"
-        f"{get_emoji('wallet_left')} <b>Current Balance:</b> {fmt_curr(u[3])} {get_emoji('wallet_right')}\n\n"
-        f"{get_emoji('global_stats')} <b>— Global Statistics —</b>\n"
-        f"{get_emoji('total_orders')} <b>Total Orders:</b> {u[4]}\n"
-        f"{get_emoji('total_spent')} <b>Total Spent:</b> {fmt_curr(u[5])}\n"
-    )
-    if u[7]:
-        text += f"{get_emoji('shield_icon')} <b>— RESELLER METRICS —</b> {get_emoji('shield_icon')}\n{get_emoji('money_icon')} <b>Total Saved via Reseller:</b> {fmt_curr(u[9])}\n\n"
-    text += f"{get_emoji('joined_grid')} <b>Joined Grid:</b> {u[6]}\n\n"
-
-    # Purchase history is shown directly inside Profile.
-    orders = db_query(
-        "SELECT delivered_key FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",
-        (call.from_user.id,), fetchall=True
-    )
-    text += "🧾 <b><u>— PURCHASE HISTORY —</u></b> 🧾\n\n"
-    if orders:
-        for o in orders:
-            text += f"🔑 <code>{o[0]}</code>\n"
-    else:
-        text += "📭 <i>No purchases yet.</i>\n"
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Redeem Promo Code",
-            callback_data="redeem_coupon",
-            icon_custom_emoji_id=get_emoji_icon('redeem_icon'),
-            style="success"
-        )],
-        [InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "redeem_coupon")
-async def redeem_coupon_start(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("🎟 <b>Please enter your VIP / Promo redeem code below:</b>", reply_markup=back_kb("menu_profile"), parse_mode='HTML')
-    await state.set_state(UserStates.wait_for_redeem)
-
-@dp.message(UserStates.wait_for_redeem)
-async def process_redeem(m: Message, state: FSMContext):
-    code = m.text.strip().upper()
-    user_id = m.from_user.id
-    if db_query("SELECT * FROM redeemed WHERE user_id=? AND code=?", (user_id, code), fetchone=True):
-        await m.answer("❌ Anti-Fraud Alert: You already redeemed this unique code!", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-        await state.clear()
-        return
-    coupon = db_query("SELECT amount, uses_left FROM coupons WHERE code=?", (code,), fetchone=True)
-    if not coupon: await m.answer("❌ Invalid or Expired Code!", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-    elif coupon[1] <= 0: await m.answer("❌ This code's usage limit has been fully claimed by other users.", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-    else:
-        db_query("UPDATE users SET balance = balance + ? WHERE user_id=?", (coupon[0], user_id))
-        db_query("UPDATE coupons SET uses_left = uses_left - 1 WHERE code=?", (code,))
-        db_query("INSERT INTO redeemed (user_id, code) VALUES (?, ?)", (user_id, code))
-        log_activity(user_id, "PROMO_REDEEMED", f"Code: {code}, Amount: {coupon[0]}")
-        await m.answer(f"🎉 <b>Success!</b>\nSafely added {fmt_curr(coupon[0])} to your balance!", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-        try:
-            user_info = db_query("SELECT first_name FROM users WHERE user_id=?", (user_id,), fetchone=True)
-            uname = user_info[0] if user_info else "Unknown User"
-            await bot.send_message(ADMIN_ID, f"🎟 <b>PROMO CODE REDEEMED!</b>\n👤 User: {uname} (<code>{user_id}</code>)\n🔖 Code: <b>{code}</b>\n💵 Amount: {fmt_curr(coupon[0])}", parse_mode='HTML')
-        except Exception: pass
-    await state.clear()
-
-@dp.callback_query(F.data == "menu_how_to")
-async def tutorial_system(call: CallbackQuery):
-    video_link_query = db_query("SELECT value FROM settings WHERE key='how_to_video'", fetchone=True)
-    video_link = video_link_query[0] if video_link_query and video_link_query[0] != 'None' else None
-    text = (f"{get_emoji('tutorial')} <b><u>— TUTORIALS & GUIDE —</u></b> {get_emoji('tutorial')}\n\n1️⃣ Add funds via <b>Add Balance</b>\n2️⃣ Navigate to <b>Product Store</b>\n3️⃣ Choose your desired Panel and Package validity.\n4️⃣ The Key and Installation APK link will be instantly provided.")
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    if video_link: kb.inline_keyboard.append([InlineKeyboardButton(text="Watch Full Video Tutorial", url=video_link, icon_custom_emoji_id=get_emoji_icon("tutorial"), style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "menu_support")
-async def support_center(call: CallbackQuery):
-    telegram_link = get_setting("support_telegram", "https://t.me/YourSupport")
-    whatsapp_link = get_setting("support_whatsapp", "https://wa.me/YourNumber")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Contact on Telegram", url=telegram_link, icon_custom_emoji_id=get_emoji_icon("telegram"), style="primary")],
-        [InlineKeyboardButton(text="Contact on WhatsApp", url=whatsapp_link, icon_custom_emoji_id=get_emoji_icon("whatsapp"), style="primary")],
-        [InlineKeyboardButton(text="🎫 Open New Ticket", callback_data="open_ticket", style="primary"), InlineKeyboardButton(text="📋 My Open Tickets", callback_data="my_tickets", style="primary")], 
-        [InlineKeyboardButton(text="BACK", callback_data="back_main", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text(f"{get_emoji('telegram')}{get_emoji('whatsapp')} <b><u>— PREMIUM SUPPORT CENTER —</u></b>\n\nContact us via Telegram or WhatsApp for instant help, or open a support ticket for admin assistance.", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "my_tickets")
-async def view_my_tickets(call: CallbackQuery):
-    tickets = db_query("SELECT id, message, status, created_at FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT 5", (call.from_user.id,), fetchall=True)
-    if not tickets: return await call.message.edit_text("📋 You do not have any active or previous support tickets.", reply_markup=back_kb("menu_support"), parse_mode='HTML')
-    text = "📋 <b><u>— Your Recent Tickets —</u></b> 📋\n\n"
-    for t in tickets:
-        status_icon = "🟢" if t[2] == 'Open' else "🔴"
-        text += f"🎫 <b>Ticket #{t[0]}</b> | Status: {status_icon} <b>{t[2]}</b>\n📅 <i>{t[3]}</i>\n📝 <i>{t[1][:80]}...</i>\n\n"
-    await call.message.edit_text(text, reply_markup=back_kb("menu_support"), parse_mode='HTML')
-
-@dp.callback_query(F.data == "open_ticket")
-async def open_ticket_start(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("📝 <b>Please type your issue/message below in detail:</b>", reply_markup=back_kb("menu_support"), parse_mode='HTML')
-    await state.set_state(UserStates.wait_for_ticket)
-
-@dp.message(UserStates.wait_for_ticket)
-async def process_ticket(m: Message, state: FSMContext):
-    db_query("INSERT INTO tickets (user_id, message, created_at) VALUES (?, ?, ?)", (m.from_user.id, m.text, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    await m.answer("✅ <b>Ticket Submitted Successfully!</b> Admins will reply soon.", reply_markup=main_menu_kb(m.from_user.id), parse_mode='HTML')
-    try: await bot.send_message(ADMIN_ID, f"🚨 <b>NEW SUPPORT TICKET</b>\nFrom: <code>{m.from_user.id}</code>\nMsg: {m.text}", parse_mode='HTML')
-    except: pass
-    log_activity(m.from_user.id, "OPENED_TICKET")
-    await state.clear()
-
-# ==============================================================================
-# 18. ADMIN PANEL
-# ==============================================================================
-@dp.message(Command("admin"))
-async def admin_panel(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    await state.clear()
-    await message.answer("⚙️ <b>Advanced Admin Terminal</b>\n<i>Authorized Access Granted.</i>", reply_markup=admin_kb(), parse_mode='HTML')
-
-@dp.callback_query(F.data == "admin_panel_back")
-async def back_to_admin(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await call.message.edit_text("⚙️ <b>Advanced Admin Terminal</b>\n<i>Authorized Access Granted.</i>", reply_markup=admin_kb(), parse_mode='HTML')
-
-@dp.callback_query(F.data == "admin_toggle_vip_sys")
-async def toggle_vip_sys(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    res = db_query("SELECT value FROM settings WHERE key='vip_status'", fetchone=True)
-    current = res[0] if res else 'OFF'
-    new_status = 'ON' if current == 'OFF' else 'OFF'
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('vip_status', ?)", (new_status,))
-    await call.message.edit_reply_markup(reply_markup=admin_kb())
-
-@dp.callback_query(F.data == "admin_user_control_start")
-async def admin_user_control_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Download Full User List", callback_data="admin_download_userlist", style="success")],
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text("💻 <b>User Control Terminal</b>\n\n✏️ Enter the <b>User ID</b> or <b>@Username</b> you want to investigate or manage:\n\n👇 <b>OR</b> download the full user CSV format list:", reply_markup=kb, parse_mode='HTML')
-    await state.set_state(AdminStates.manage_target_user)
-
-@dp.callback_query(F.data == "admin_download_userlist")
-async def admin_download_userlist(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    users = db_query("SELECT username, user_id, phone, balance, orders_count, is_vip, is_reseller FROM users", fetchall=True)
-    if not users: return await call.answer("❌ No users found in the database.", show_alert=True)
-    file_content = "FULL DATABASE DUMP\n" + "="*100 + "\n"
-    for u in users:
-        uname = u[0] if u[0] else "No_Username"
-        uid = u[1]
-        phone = u[2] if u[2] else "No_Phone"
-        bal = u[3]
-        orders = u[4]
-        vip_status = "YES" if u[5] else "NO"
-        res_status = "YES" if u[6] else "NO"
-        file_content += f"UID: {uid} | UNAME: {uname} | PHONE: {phone} | BAL: ₹{bal:.2f} | BUY: {orders} | VIP: {vip_status} | RES: {res_status}\n"
-    doc = BufferedInputFile(file_content.encode('utf-8'), filename=f"DB_{datetime.now().strftime('%Y%m%d')}.txt")
-    await call.message.answer_document(document=doc, caption="📋 <b>Database export complete.</b>", parse_mode='HTML')
-    await call.answer()
-
-@dp.message(AdminStates.manage_target_user)
-async def process_user_lookup(m: Message, state: FSMContext):
-    target = m.text.strip()
-    if target.startswith('@'): target = target[1:]
-    loader_msg = await hacker_loading(m, "Querying User Database")
-    user_q = db_query("SELECT user_id, first_name, username, balance, is_reseller, orders_count, spent, joined_date, is_banned, warnings, is_vip FROM users WHERE user_id=? OR username=? COLLATE NOCASE", (target, target), fetchone=True)
-    if not user_q: return await loader_msg.edit_text("❌ Target not found in the grid. Check ID/Username syntax.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    u_id, u_name, u_user, bal, is_res, orders, spent, joined, is_banned, warnings, is_vip = user_q
-    await state.update_data(target_u_id=u_id)
-    status_emoji = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
-    tags = []
-    if is_res: tags.append("👑 Reseller")
-    if is_vip: tags.append("🌟 VIP")
-    type_str = " | ".join(tags) if tags else "👤 Regular"
-    text = (f"🛡 <b><u>USER CONTROL TERMINAL</u></b> 🛡\n━━━━━━━━━━━━━━━━━━\n📛 <b>Name:</b> {u_name} (@{u_user})\n🆔 <b>ID:</b> <code>{u_id}</code>\n📊 <b>Status:</b> {status_emoji}\n🔰 <b>Type:</b> {type_str}\n⚠️ <b>Warnings Issued:</b> {warnings}\n━━━━━━━━━━━━━━━━━━\n💰 <b>Wallet Balance:</b> {fmt_curr(bal)}\n📦 <b>Orders:</b> {orders} | 💸 <b>Total Spent:</b> {fmt_curr(spent)}\n📅 <b>Joined:</b> {joined}")
-    ban_btn_text = "Unban ✅" if is_banned else "Ban 🚫"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Add Funds ➕", callback_data=f"usrctrl_add_{u_id}", style="success"), InlineKeyboardButton(text="Minus Funds ➖", callback_data=f"usrctrl_min_{u_id}", style="danger")],
-        [InlineKeyboardButton(text=ban_btn_text, callback_data=f"usrctrl_ban_{u_id}", style="danger"), InlineKeyboardButton(text="Warn User ⚠️", callback_data=f"usrctrl_warn_{u_id}", style="danger")],
-        [InlineKeyboardButton(text="Give VIP 🌟" if not is_vip else "Remove VIP 🚫", callback_data=f"usrctrl_vip_{u_id}", style="success")],
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await loader_msg.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("usrctrl_"))
-async def handle_user_actions(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    action = call.data.split("_")[1]
-    u_id = int(call.data.split("_")[2])
-    await state.update_data(target_u_id=u_id)
-    if action == "ban":
-        current_status = db_query("SELECT is_banned FROM users WHERE user_id=?", (u_id,), fetchone=True)[0]
-        if current_status == 0:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Yes, Ban", callback_data=f"confirm_ban_{u_id}", style="danger"), InlineKeyboardButton(text="❌ Cancel", callback_data="admin_user_control_start", style="danger")]
-            ])
-            await call.message.edit_text(f"⚠️ Are you sure you want to <b>BAN</b> user <code>{u_id}</code>?", reply_markup=kb, parse_mode='HTML')
-            await state.set_state(AdminStates.confirm_ban)
-        else:
-            db_query("UPDATE users SET is_banned=0 WHERE user_id=?", (u_id,))
-            await call.answer("✅ User unbanned successfully!", show_alert=True)
-            m = call.message; m.text = str(u_id); await process_user_lookup(m, state)
-    elif action == "vip":
-        current_status = db_query("SELECT is_vip FROM users WHERE user_id=?", (u_id,), fetchone=True)[0]
-        if current_status == 1:
-            db_query("UPDATE users SET is_vip=0 WHERE user_id=?", (u_id,))
-            await call.answer("✅ VIP Removed!", show_alert=True)
-        else:
-            db_query("UPDATE users SET is_vip=1, vip_since=? WHERE user_id=?", (datetime.now().strftime("%Y-%m-%d"), u_id))
-            await call.answer("✅ VIP Granted!", show_alert=True)
-        m = call.message; m.text = str(u_id); await process_user_lookup(m, state)
-    elif action == "add":
-        await call.message.edit_text("💰 Enter the amount to <b>ADD</b> to this user's wallet:", reply_markup=admin_back_kb(), parse_mode='HTML')
-        await state.set_state(AdminStates.wait_for_add_money)
-    elif action == "min":
-        await call.message.edit_text("💸 Enter the amount to <b>DEDUCT</b> from this user's wallet:", reply_markup=admin_back_kb(), parse_mode='HTML')
-        await state.set_state(AdminStates.wait_for_minus_money)
-    elif action == "warn":
-        await call.message.edit_text("⚠️ Type the strict warning message you want to send directly to this user:", reply_markup=admin_back_kb(), parse_mode='HTML')
-        await state.set_state(AdminStates.wait_for_warning)
-
-@dp.callback_query(F.data.startswith("confirm_ban_"))
-async def confirm_ban(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    u_id = int(call.data.split("_")[2])
-    db_query("UPDATE users SET is_banned=1 WHERE user_id=?", (u_id,))
-    await call.answer("🔴 User has been banned!", show_alert=True)
-    await state.clear()
-    m = call.message; m.text = str(u_id); await process_user_lookup(m, state)
-
-@dp.message(AdminStates.wait_for_add_money)
-async def exec_add_money(m: Message, state: FSMContext):
+def process_successful_fampay(row):
+    conn = get_db()
+    cursor = conn.cursor()
     try:
-        amt = float(m.text)
-        data = await state.get_data()
-        u_id = data['target_u_id']
-        db_query("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
-        await m.answer(f"✅ Successfully added {fmt_curr(amt)} to target <code>{u_id}</code>.", reply_markup=admin_kb(), parse_mode='HTML')
-        try: await bot.send_message(u_id, f"💰 <b>Wallet Top-up!</b>\nAdmin has manually added {fmt_curr(amt)} to your wallet.", parse_mode='HTML')
-        except: pass
-        await state.clear()
-    except ValueError: await m.answer("❌ Critical Error: Input must be a valid number.")
-
-@dp.message(AdminStates.wait_for_minus_money)
-async def exec_minus_money(m: Message, state: FSMContext):
-    try:
-        amt = float(m.text)
-        data = await state.get_data()
-        u_id = data['target_u_id']
-        db_query("UPDATE users SET balance = balance - ? WHERE user_id=?", (amt, u_id))
-        await m.answer(f"✅ Successfully deducted {fmt_curr(amt)} from target <code>{u_id}</code>.", reply_markup=admin_kb(), parse_mode='HTML')
-        await state.clear()
-    except ValueError: await m.answer("❌ Critical Error: Input must be a valid number.")
-
-@dp.message(AdminStates.wait_for_warning)
-async def exec_warn_user(m: Message, state: FSMContext):
-    data = await state.get_data()
-    u_id = data['target_u_id']
-    warn_text = m.text
-    db_query("UPDATE users SET warnings = warnings + 1 WHERE user_id=?", (u_id,))
-    await m.answer(f"✅ Official warning dispatched to <code>{u_id}</code>.", reply_markup=admin_kb(), parse_mode='HTML')
-    try: await bot.send_message(u_id, f"⚠️ <b>OFFICIAL WARNING FROM SYSTEM ADMIN:</b>\n\n{warn_text}\n\n<i>Subsequent infractions may lead to an automated grid ban.</i>", parse_mode='HTML')
-    except: pass
-    await state.clear()
-
-# ==============================================================================
-# 19. ADMIN STATISTICS
-# ==============================================================================
-@dp.callback_query(F.data == "admin_view_stats")
-async def admin_dashboard_stats(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    t_users = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
-    t_resellers = db_query("SELECT COUNT(*) FROM users WHERE is_reseller=1", fetchone=True)[0]
-    t_vip = db_query("SELECT COUNT(*) FROM users WHERE is_vip=1", fetchone=True)[0]
-    t_prods = db_query("SELECT COUNT(*) FROM products", fetchone=True)[0]
-    t_keys = db_query("SELECT COUNT(*) FROM product_keys WHERE is_used=0", fetchone=True)[0]
-    t_rev = db_query("SELECT SUM(spent) FROM users", fetchone=True)[0] or 0.0
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    msg = (f"📊 <b><u>GRID INTELLIGENCE DASHBOARD</u></b> 📊\n━━━━━━━━━━━━━━━━━━\n👥 <b>Total Grid Users:</b> {t_users}\n👑 <b>Wholesale Resellers:</b> {t_resellers}\n🌟 <b>Elite VIP Members:</b> {t_vip}\n━━━━━━━━━━━━━━━━━━\n📦 <b>Active Products:</b> {t_prods}\n🔑 <b>Unused Keys in Vault:</b> {t_keys}\n💰 <b>Total Gross Revenue:</b> {fmt_curr(t_rev)}\n━━━━━━━━━━━━━━━━━━")
-    await call.message.edit_text(msg, reply_markup=admin_back_kb(), parse_mode='HTML')
-
-# ==============================================================================
-# 20. ADMIN PRODUCT MANAGEMENT
-# ==============================================================================
-@dp.callback_query(F.data == "admin_add_prod")
-async def add_prod_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for cat in FIXED_CATEGORIES:
-        emoji_id = get_category_emoji(cat)
-        kb.inline_keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"addprod_cat_{cat}", icon_custom_emoji_id=emoji_id, style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Cancel", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("<b>Step 1:</b> Choose the <b>Category</b> for this product:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("addprod_cat_"))
-async def add_prod_category_selected(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    category = call.data.split("addprod_cat_", 1)[1]
-    await state.update_data(cat=category)
-    await call.message.edit_text(f"<b>Step 2:</b> Enter <b>PANEL NAME</b>\n(e.g., 'MST PANEL', 'DRIP PANEL'):", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_panel_name)
-
-@dp.message(AdminStates.add_prod_panel_name)
-async def add_prod_panel_name(m: Message, state: FSMContext):
-    await state.update_data(panel_name=m.text)
-    await m.answer("<b>Step 3:</b> Enter <b>PACKAGE DURATION/DATE NAME</b>\n(e.g., '7 Days', '1 Month'):", parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_name)
-
-@dp.message(AdminStates.add_prod_name)
-async def add_prod_name(m: Message, state: FSMContext):
-    await state.update_data(name=m.text)
-    await m.answer("⏳ Enter Time Validity String (e.g., '24 Hours'):", parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_validity)
-
-@dp.message(AdminStates.add_prod_validity)
-async def add_prod_validity(m: Message, state: FSMContext):
-    await state.update_data(validity=m.text)
-    await m.answer("📱 Enter strict Device Enforcement Limit (e.g., '1 Device HWID'):", parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_device_limit)
-
-@dp.message(AdminStates.add_prod_device_limit)
-async def add_prod_device_limit(m: Message, state: FSMContext):
-    await state.update_data(device_limit=m.text)
-    await m.answer("💰 Enter standard **User Price** in Rupees (₹) (e.g., 500):", parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_price)
-
-@dp.message(AdminStates.add_prod_price)
-async def add_prod_price(m: Message, state: FSMContext):
-    try:
-        await state.update_data(price=float(m.text))
-        await m.answer("👑 Enter wholesale **Reseller Price** in Rupees (₹) (e.g., 300):", parse_mode='HTML')
-        await state.set_state(AdminStates.add_prod_reseller_price)
-    except ValueError: await m.answer("❌ Invalid input datatype! Must be numerical.")
-
-@dp.message(AdminStates.add_prod_reseller_price)
-async def add_prod_reseller_price(m: Message, state: FSMContext):
-    try:
-        await state.update_data(reseller_price=float(m.text))
-        await m.answer("🔗 Enter direct APK/Payload Download Link (or type 'none' to omit):", parse_mode='HTML')
-        await state.set_state(AdminStates.add_prod_apk)
-    except ValueError: await m.answer("❌ Invalid input datatype! Must be numerical.")
-
-@dp.message(AdminStates.add_prod_apk)
-async def add_prod_apk(m: Message, state: FSMContext):
-    await state.update_data(apk="" if m.text.lower() == 'none' else m.text)
-    await m.answer(
-        "🔌 <b>Step:</b> Enter the <b>Reseller Product PID</b> for this package.\n"
-        "(e.g., <code>166</code>, <code>155</code>). Used for live API fallback.\n"
-        "Type <code>none</code> to skip (local-only product).",
-        parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_pid)
-
-@dp.message(AdminStates.add_prod_pid)
-async def add_prod_pid(m: Message, state: FSMContext):
-    pid = "" if m.text.strip().lower() == 'none' else m.text.strip()
-    await state.update_data(product_pid=pid)
-    await m.answer(
-        "⏱ <b>Step:</b> Enter the <b>Exact Duration String</b> sent to the API.\n"
-        "Must match the reseller exactly, e.g. <code>1 Hours</code>, <code>3 Hours</code>, "
-        "<code>1 Day</code>, <code>7 Days</code>, <code>30 Days</code>.",
-        parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_duration)
-
-@dp.message(AdminStates.add_prod_duration)
-async def add_prod_duration(m: Message, state: FSMContext):
-    await state.update_data(duration_string=m.text.strip())
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="V2 / Direct Key (No android_id)", callback_data="keytype_V2", style="primary")],
-        [InlineKeyboardButton(text="V1 / Device-Lock (android_id required)", callback_data="keytype_V1", style="primary")],
-    ])
-    await m.answer("🔐 <b>Step:</b> Select the <b>Key Type</b> for this package:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("keytype_"))
-async def add_prod_key_type(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    kt = call.data.split("_", 1)[1]
-    await state.update_data(key_type=kt)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏭ API-only Product (Skip Local Keys)", callback_data="skip_local_keys", style="success")],
-    ])
-    await call.message.edit_text(
-        "📥 <b>Vault Injection Phase</b>\n\n"
-        "Paste all the license <b>Keys</b> exactly as formatted (1 key per newline).\n\n"
-        "No local keys? Tap the button below, or simply send <code>none</code> / <code>skip</code>.",
-        reply_markup=kb, parse_mode='HTML')
-    await state.set_state(AdminStates.add_prod_keys)
-    await call.answer()
-
-
-def _persist_new_product(data: Dict[str, Any], keys: List[str]) -> int:
-    """Insert a new product + its local keys. Returns the new product id."""
-    stock = len(keys)
-    conn = sqlite3.connect('Cuibcc.db')
-    try:
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO products (category, panel_name, name, price_inr, reseller_price, stock, apk_link, validity, device_limit, product_pid, duration_string, key_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (data['cat'], data['panel_name'], data['name'], data['price'], data['reseller_price'],
-             stock, data['apk'], data['validity'], data['device_limit'],
-             data.get('product_pid', ''), data.get('duration_string', ''), data.get('key_type', 'V2'))
-        )
-        prod_id = c.lastrowid
-        for k in keys:
-            c.execute("INSERT INTO product_keys (product_id, key_text) VALUES (?, ?)", (prod_id, k))
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("UPDATE pending_payments SET status='processing' WHERE id=? AND status='pending'", (row["id"],))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return False
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE id=?", (row["amount"], row["user_id"]))
+        cursor.execute("INSERT INTO transactions (user_id, amount, type, details) VALUES (?,?,'add_money','fam_pay')", (row["user_id"], row["amount"]))
+        cursor.execute("UPDATE pending_payments SET status='success' WHERE id=?", (row["id"],))
         conn.commit()
-        return prod_id
+        return True
     except Exception as e:
         conn.rollback()
-        logger.error(f"_persist_new_product failed: {e}")
-        raise
+        logger.error(f"process_successful_fampay error: {e}")
+        return False
     finally:
+        cursor.close()
         conn.close()
 
-
-def _new_product_success_text(data: Dict[str, Any], stock: int, skipped: bool) -> str:
-    header = "✅ <b>Data Deployment Successful!</b>"
-    if skipped:
-        header += "\n⏭ <b>Local stock skipped. Product configured as API-only.</b>"
-    return (
-        f"{header}\n\n"
-        f"📦 Panel '{data['cat']}' -> Panel Name '{data['panel_name']}' -> Package '{data['name']}'\n"
-        f"🔌 PID: {data.get('product_pid') or '—'} | ⏱ Duration: {data.get('duration_string') or '—'} | 🔐 Type: {data.get('key_type', 'V2')}\n"
-        f"🔒 Vault Stock: {stock} Keys injected.\n"
-        f"💰 User Price: {fmt_curr(data['price'])} | 👑 Reseller: {fmt_curr(data['reseller_price'])}"
-    )
-
-
-@dp.message(AdminStates.add_prod_keys)
-async def add_prod_keys(m: Message, state: FSMContext):
-    raw = (m.text or "").strip()
-    skip_words = {"none", "skip", "no", "0", "-"}
-    if not raw or raw.lower() in skip_words:
-        keys = []
-    else:
-        keys = [k.strip() for k in raw.split('\n') if k.strip()]
-    data = await state.get_data()
-    try:
-        _persist_new_product(data, keys)
-    except Exception as e:
-        return await m.answer(f"❌ Failed to save product: {e}", reply_markup=admin_kb(), parse_mode='HTML')
-    await m.answer(_new_product_success_text(data, len(keys), skipped=(len(keys) == 0)),
-                   reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-
-@dp.callback_query(F.data == "skip_local_keys", AdminStates.add_prod_keys)
-async def skip_local_keys(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    data = await state.get_data()
-    try:
-        _persist_new_product(data, [])
-    except Exception as e:
-        return await call.message.edit_text(f"❌ Failed to save product: {e}", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await call.message.edit_text(_new_product_success_text(data, 0, skipped=True),
-                                 reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-    await call.answer("API-only product saved.")
-
-@dp.callback_query(F.data == "admin_manage_prods")
-async def admin_manage_prods(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    prods = db_query("SELECT id, name, category, panel_name, stock, is_active FROM products ORDER BY category, panel_name", fetchall=True)
-    if not prods: return await call.message.edit_text("📦 Store Database is completely empty.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for p in prods:
-        status_dot = "🟢" if p[5] else "🔴"
-        panel_name = p[3] if p[3] is not None else ""
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"{status_dot} [{p[2]}] {panel_name} - {p[1]} (Stock: {p[4]})", callback_data=f"admin_view_p_{p[0]}", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("📦 <b>Database Editor: Select Node to modify</b>", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("admin_view_p_"))
-async def admin_view_product(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    try:
-        p_id = int(call.data.split("_")[3])
-        prod = db_query("SELECT * FROM products WHERE id=?", (p_id,), fetchone=True)
-        if not prod: return await call.answer("❌ Architecture fault: Node lost!", show_alert=True)
-        panel_name = prod[2] if prod[2] is not None else ""
-        price_inr = safe_float(prod[4])
-        reseller_price = safe_float(prod[5])
-        text = (f"📦 <b><u>NODE DEEP DIVE DETAILS</u></b>\n━━━━━━━━━━━━━━━━━━\n<b>ID:</b> <code>{prod[0]}</code>\n<b>Panel Group:</b> {prod[1]}\n<b>Panel Name:</b> {panel_name}\n<b>Package Date/Time:</b> {prod[3]}\n<b>Standard Price:</b> {fmt_curr(price_inr)}\n👑 <b>Wholesale Price:</b> {fmt_curr(reseller_price)}\n<b>Vault Stock:</b> {prod[6]}\n<b>Payload Link:</b> {prod[7] if prod[7] else 'None'}\n<b>Time Config:</b> {prod[8]}\n<b>HWID Limit:</b> {prod[9]}\n<b>Visibility:</b> {'Active' if prod[10] else 'Hidden'}\n━━━━━━━━━━━━━━━━━━")
-        toggle_btn_text = "Hide Product 👁‍🗨" if prod[10] else "Unhide Product 👁"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Edit Panel Group 🏷️", callback_data=f"edit_p_{p_id}_cat", style="primary"), InlineKeyboardButton(text="Edit Panel Name 🏷️", callback_data=f"edit_p_{p_id}_panel_name", style="primary")],
-            [InlineKeyboardButton(text="Edit Package Name ✏️", callback_data=f"edit_p_{p_id}_name", style="primary")],
-            [InlineKeyboardButton(text="Edit Price 💰", callback_data=f"edit_p_{p_id}_price", style="primary"), InlineKeyboardButton(text="Edit R-Price 👑", callback_data=f"edit_p_{p_id}_rprice", style="primary")],
-            [InlineKeyboardButton(text="Edit Validity ⏳", callback_data=f"edit_p_{p_id}_validity", style="primary"), InlineKeyboardButton(text="Edit Device 📱", callback_data=f"edit_p_{p_id}_device", style="primary")],
-            [InlineKeyboardButton(text="Edit APK Link 🔗", callback_data=f"edit_p_{p_id}_apk", style="primary"), InlineKeyboardButton(text="Add Keys ➕", callback_data=f"edit_p_{p_id}_keys", style="success")],
-            [InlineKeyboardButton(text="Edit PID 🔌", callback_data=f"edit_p_{p_id}_pid", style="primary"), InlineKeyboardButton(text="Edit Duration ⏱", callback_data=f"edit_p_{p_id}_duration", style="primary")],
-            [InlineKeyboardButton(text="Edit Key Type 🔐", callback_data=f"edit_p_{p_id}_keytype", style="primary")],
-            [InlineKeyboardButton(text="Delete Key 🗑", callback_data=f"delkey_p_{p_id}", style="danger"), InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_p_{p_id}", style="danger")],
-            [InlineKeyboardButton(text="Nuke Full Node 🗑", callback_data=f"delete_p_{p_id}", style="danger"), InlineKeyboardButton(text="BACK", callback_data="admin_manage_prods", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-        ])
-        await call.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True, parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Error in admin_view_product: {e}")
-        await call.message.edit_text(f"❌ Error loading product: {str(e)}", reply_markup=admin_back_kb(), parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("toggle_p_"))
-async def admin_toggle_product(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    p_id = int(call.data.split("_")[2])
-    current = db_query("SELECT is_active FROM products WHERE id=?", (p_id,), fetchone=True)[0]
-    new_val = 0 if current == 1 else 1
-    db_query("UPDATE products SET is_active=? WHERE id=?", (new_val, p_id))
-    await call.answer("Visibility updated successfully!", show_alert=True)
-    await admin_view_product(call)
-
-# ==============================================================================
-# FIX: Edit product field – correctly handle different data types and multi-word fields
-# ==============================================================================
-@dp.callback_query(F.data.startswith("edit_p_"))
-async def start_edit_product(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    # Use split with maxsplit=3 to keep field name intact (may contain underscores)
-    parts = call.data.split("_", 3)
-    if len(parts) < 4:
-        return await call.answer("Invalid callback data.", show_alert=True)
-    p_id = int(parts[2])
-    field = parts[3]
-    await state.update_data(edit_p_id=p_id, edit_field=field)
-    if field == 'keys':
-        await call.message.edit_text("📥 <b>Vault Injection</b>\nPaste the <b>NEW KEYS</b> to append to the stock (1 key per line):", reply_markup=admin_back_kb(), parse_mode='HTML')
-        await state.set_state(AdminStates.wait_for_add_keys)
-    else:
-        field_name_map = {'cat': 'New Panel Group/Category Name', 'panel_name': 'New Panel Name', 'name': 'New Package/Date Name', 'price': 'New Standard Price in ₹', 'rprice': 'New Reseller Price in ₹', 'validity': 'New Time Validity String', 'device': 'New HWID Limit String', 'apk': 'New Payload Link (or type "none")'}
-        await call.message.edit_text(f"✏️ Input the required data for: <b>{field_name_map.get(field, field)}</b>", reply_markup=admin_back_kb(), parse_mode='HTML')
-        await state.set_state(AdminStates.wait_for_new_value)
-
-@dp.message(AdminStates.wait_for_new_value)
-async def process_edit_value(m: Message, state: FSMContext):
-    data = await state.get_data()
-    p_id = data['edit_p_id']; field = data['edit_field']; new_val = m.text.strip()
-    
-    # Convert price fields to float, others remain strings
-    if field in ['price', 'rprice']:
+# BUG #19 FIX: timeout check even during maintenance
+def check_payments():
+    while True:
+        conn = None
+        cursor = None
         try:
-            new_val = float(new_val)
-        except ValueError:
-            return await m.answer("❌ Invalid number format. Please enter a valid price (e.g., 500).")
-    elif field == 'apk':
-        new_val = "" if new_val.lower() == 'none' else new_val
-    elif field == 'pid':
-        new_val = "" if new_val.lower() == 'none' else new_val
-    elif field == 'keytype':
-        new_val = new_val.upper()
-        if new_val not in ('V1', 'V2'):
-            return await m.answer("❌ Invalid Key Type. Enter V1 (Device-Lock) or V2 (Direct).")
-    # For panel_name, cat, name, validity, device, duration – keep as string
-    
-    db_col_map = {'cat': 'category', 'panel_name': 'panel_name', 'name': 'name', 'price': 'price_inr', 'rprice': 'reseller_price', 'validity': 'validity', 'device': 'device_limit', 'apk': 'apk_link', 'pid': 'product_pid', 'duration': 'duration_string', 'keytype': 'key_type'}
-    db_query(f"UPDATE products SET {db_col_map[field]}=? WHERE id=?", (new_val, p_id))
-    await m.answer("✅ <b>Node updated gracefully!</b>", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
+            maintenance = is_bot_maintenance()
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM pending_payments WHERE status='pending'")
+            rows = cursor.fetchall()
+            for row in rows:
+                elapsed = time.time() - row["created_at"]
+                if elapsed > FAMPAY_TIMEOUT_SECONDS:
+                    if verify_fampay_payment(row["order_id"]):
+                        if process_successful_fampay(row):
+                            try:
+                                safe_send(row["user_id"], f"✅ Payment Successful!\n\n💰 ₹{row['amount']}\n\nBalance added!")
+                            except Exception as e:
+                                logger.warning(f"FamPay success notify fail | user={row['user_id']} | {e}")
+                            try:
+                                notify_admins(f"💰 Fam Pay Payment!\nUser: {row['user_id']}\n₹{row['amount']}")
+                            except Exception as e:
+                                logger.error(f"FamPay admin notify fail | {e}")
+                        continue
+                    conn2 = get_db()
+                    cur2 = conn2.cursor()
+                    try:
+                        cur2.execute("UPDATE pending_payments SET status='failed' WHERE id=? AND status='pending'", (row["id"],))
+                        conn2.commit()
+                        if cur2.rowcount == 1:
+                            try:
+                                safe_send(row["user_id"], f"❌ Payment Timeout\n\n💰 ₹{row['amount']}\n\n5 minute mein payment confirm nahi hui.\n\nAgar paisa kata hai toh support se contact karo.")
+                            except Exception as e:
+                                logger.warning(f"FamPay timeout notify fail | user={row['user_id']} | {e}")
+                    finally:
+                        cur2.close()
+                        conn2.close()
+                    continue
+                # BUG #19 FIX: don't skip verification during maintenance
+                if verify_fampay_payment(row["order_id"]):
+                    if process_successful_fampay(row):
+                        try:
+                            safe_send(row["user_id"], f"✅ Payment Successful!\n\n💰 ₹{row['amount']}\n\nBalance added!")
+                        except Exception as e:
+                            logger.warning(f"FamPay success notify fail | user={row['user_id']} | {e}")
+                        try:
+                            notify_admins(f"💰 Fam Pay Payment!\nUser: {row['user_id']}\n₹{row['amount']}")
+                        except Exception as e:
+                            logger.error(f"FamPay admin notify fail | {e}")
+        except Exception as e:
+            logger.error(f"check_payments error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(FAMPAY_CHECK_INTERVAL)
 
-@dp.message(AdminStates.wait_for_add_keys)
-async def process_add_keys(m: Message, state: FSMContext):
-    data = await state.get_data()
-    p_id = data['edit_p_id']
-    keys = [k.strip() for k in m.text.strip().split('\n') if k.strip()]
-    if len(keys) == 0: return await m.answer("❌ Protocol breach: Zero valid keys found.", reply_markup=admin_kb(), parse_mode='HTML')
-    conn = sqlite3.connect('Cuibcc.db')
-    c = conn.cursor()
-    for k in keys: c.execute("INSERT INTO product_keys (product_id, key_text) VALUES (?, ?)", (p_id, k))
-    c.execute("UPDATE products SET stock = stock + ? WHERE id=?", (len(keys), p_id))
-    conn.commit(); conn.close()
-    await m.answer(f"✅ <b>Vault Secure!</b> {len(keys)} new keys appended and encrypted.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-# ==============================================================================
-# 20B. BULK KEY VAULT INGESTION (dedicated admin menu)
-# ==============================================================================
-@dp.callback_query(F.data == "admin_bulk_keys")
-async def admin_bulk_keys(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    prods = db_query("SELECT id, name, category, panel_name, stock FROM products ORDER BY category, panel_name", fetchall=True)
-    if not prods:
-        return await call.message.edit_text("📦 No products exist yet. Add a product first.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for p in prods:
-        kb.inline_keyboard.append([InlineKeyboardButton(
-            text=f"[{p[2]}] {p[3]} - {p[1]} (Stock: {p[4]})",
-            callback_data=f"bulkkeys_p_{p[0]}", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("🔑 <b>Bulk Key Vault Ingestion</b>\nSelect a product to inject keys into:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("bulkkeys_p_"))
-async def admin_bulk_keys_select(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    p_id = int(call.data.split("_")[2])
-    prod = db_query("SELECT name, category, panel_name FROM products WHERE id=?", (p_id,), fetchone=True)
-    if not prod: return await call.answer("Product not found.", show_alert=True)
-    await state.update_data(edit_p_id=p_id)
-    await state.set_state(AdminStates.wait_for_add_keys)
-    await call.message.edit_text(
-        f"🔑 <b>Bulk Ingestion → {prod[1]} / {prod[2]} / {prod[0]}</b>\n\n"
-        "Paste the keys now (1 key per newline). They will be appended to the vault:",
-        reply_markup=admin_back_kb(), parse_mode='HTML')
-    await call.answer()
-
-# ==============================================================================
-# 20C. RESELLER API SETTINGS (global credentials)
-# ==============================================================================
-@dp.callback_query(F.data == "admin_reseller_api")
-async def admin_reseller_api(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    cfg = get_reseller_config()
-    api_key = cfg["api_key"] or ""
-    master_key = cfg["master_key"] or ""
-    masked_key = (api_key[:6] + "..." + api_key[-4:]) if len(api_key) > 10 else (api_key or "—")
-    masked_master = (master_key[:6] + "..." + master_key[-4:]) if len(master_key) > 10 else (master_key or "—")
-    status = cfg["status"].upper()
-    text = (f"🔌 <b><u>RESELLER API SETTINGS</u></b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"🌐 <b>Endpoint:</b> {cfg['url']}\n"
-            f"🔑 <b>API Key:</b> <code>{masked_key}</code>\n"
-            f"🛡 <b>Master Key:</b> <code>{masked_master}</code>\n"
-            f"🧭 <b>User-Agent:</b> {cfg['user_agent'][:55]}...\n"
-            f"📡 <b>Status:</b> {'🟢 ON' if status == 'ON' else '🔴 OFF'}\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "<i>Used for Priority-2 live key purchases when the local vault is empty.</i>")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Edit Endpoint", callback_data="reseller_edit_url", style="primary")],
-        [InlineKeyboardButton(text="Edit API Key", callback_data="reseller_edit_api_key", style="primary")],
-        [InlineKeyboardButton(text="Edit Master Key", callback_data="reseller_edit_master_key", style="primary")],
-        [InlineKeyboardButton(text="Edit User-Agent", callback_data="reseller_edit_user_agent", style="primary")],
-        [InlineKeyboardButton(text=f"Toggle Status ({'ON' if status == 'ON' else 'OFF'})", callback_data="reseller_toggle_status", style="success" if status == 'ON' else "danger")],
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")],
-    ])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "reseller_toggle_status")
-async def reseller_toggle_status(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    cur = get_setting("reseller_api_status", "ON").upper()
-    set_setting("reseller_api_status", "OFF" if cur == "ON" else "ON")
-    await admin_reseller_api(call)
-
-@dp.callback_query(F.data == "reseller_edit_url")
-async def reseller_edit_url(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("🌐 Send the new <b>Reseller API Endpoint URL</b>:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_reseller_url)
-
-@dp.message(AdminStates.wait_for_reseller_url)
-async def save_reseller_url(m: Message, state: FSMContext):
-    set_setting("reseller_api_url", m.text.strip())
-    await m.answer("✅ Reseller API endpoint updated.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "reseller_edit_api_key")
-async def reseller_edit_api_key(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("🔑 Send the new <b>Reseller API Key</b> (api_key):", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_reseller_api_key)
-
-@dp.message(AdminStates.wait_for_reseller_api_key)
-async def save_reseller_api_key(m: Message, state: FSMContext):
-    set_setting("reseller_api_key", m.text.strip())
-    await m.answer("✅ Reseller API key updated.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "reseller_edit_master_key")
-async def reseller_edit_master_key(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("🛡 Send the new <b>Master Key</b> (x-master-key header):", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_reseller_master_key)
-
-@dp.message(AdminStates.wait_for_reseller_master_key)
-async def save_reseller_master_key(m: Message, state: FSMContext):
-    set_setting("reseller_master_key", m.text.strip())
-    await m.answer("✅ Master key updated.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "reseller_edit_user_agent")
-async def reseller_edit_user_agent(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("🧭 Send the new <b>User-Agent</b> string:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_reseller_user_agent)
-
-@dp.message(AdminStates.wait_for_reseller_user_agent)
-async def save_reseller_user_agent(m: Message, state: FSMContext):
-    set_setting("reseller_user_agent", m.text.strip())
-    await m.answer("✅ User-Agent updated.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("delete_p_"))
-async def admin_delete_product(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    p_id = int(call.data.split("_")[2])
-    db_query("DELETE FROM products WHERE id=?", (p_id,))
-    db_query("DELETE FROM product_keys WHERE product_id=?", (p_id,))
-    await call.answer("☢️ Nuclear wipe successful! Node and vault deleted.", show_alert=True)
-    await admin_manage_prods(call)
-
-@dp.callback_query(F.data.startswith("delkey_p_"))
-async def admin_delete_key_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    p_id = int(call.data.split("_")[2])
-    await state.update_data(del_p_id=p_id)
-    await call.message.edit_text("🗑 Send the <b>exact string match</b> of the key you wish to purge from the vault:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_delete_key)
-
-@dp.message(AdminStates.wait_for_delete_key)
-async def process_delete_key(m: Message, state: FSMContext):
-    data = await state.get_data()
-    p_id = data['del_p_id']
-    key_to_delete = m.text.strip()
-    key_data = db_query("SELECT id, is_used FROM product_keys WHERE product_id=? AND key_text=?", (p_id, key_to_delete), fetchone=True)
-    if not key_data: return await m.answer("❌ Key not found. Check logs and try again.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    if key_data[1] == 1: return await m.answer("⚠️ Action Blocked: This key has already been dispatched to a user.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    db_query("DELETE FROM product_keys WHERE id=?", (key_data[0],))
-    db_query("UPDATE products SET stock = stock - 1 WHERE id=?", (p_id,))
-    await m.answer(f"✅ Key <code>{key_to_delete}</code> securely purged from vault.\n📦 Database indices updated.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-# ==============================================================================
-# 21. ADMIN TICKETS, BROADCAST, COUPONS
-# ==============================================================================
-@dp.callback_query(F.data == "admin_view_tickets")
-async def admin_view_tickets(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    tickets = db_query("SELECT id, user_id, message, created_at FROM tickets WHERE status='Open' LIMIT 1", fetchall=True)
-    if not tickets: return await call.answer("✅ Zero pending issues. Grid is clean!", show_alert=True)
-    t = tickets[0]
-    text = (f"🎫 <b><u>ACTIVE TICKET #{t[0]}</u></b>\n👤 <b>Origin UID:</b> <code>{t[1]}</code>\n📅 <b>Timestamp:</b> {t[3]}\n\n📝 <b>Payload:</b>\n{t[2]}")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Formulate Reply", callback_data=f"reply_ticket_{t[0]}_{t[1]}", style="primary")],
-        [InlineKeyboardButton(text="❌ Force Close Ticket", callback_data=f"close_ticket_{t[0]}", style="danger")],
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("close_ticket_"))
-async def close_ticket(call: CallbackQuery):
-    ticket_id = call.data.split("_")[2]
-    db_query("UPDATE tickets SET status='Closed' WHERE id=?", (ticket_id,))
-    await call.answer("✅ Status set to Closed.", show_alert=True)
-    await admin_view_tickets(call) 
-
-@dp.callback_query(F.data.startswith("reply_ticket_"))
-async def reply_ticket_start(call: CallbackQuery, state: FSMContext):
-    data = call.data.split("_")
-    ticket_id, user_id = data[2], data[3]
-    await state.update_data(ticket_id=ticket_id, user_id=user_id)
-    await call.message.edit_text(f"💬 Formulating reply for node <code>{user_id}</code>.\n\nType your message payload:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.ticket_reply_msg)
-
-@dp.message(AdminStates.ticket_reply_msg)
-async def send_ticket_reply(m: Message, state: FSMContext):
-    data = await state.get_data()
-    try:
-        await bot.send_message(data['user_id'], f"📞 <b>Admin Reply (Ref #{data['ticket_id']}):</b>\n\n{m.text}", parse_mode='HTML')
-        db_query("UPDATE tickets SET status='Closed' WHERE id=?", (data['ticket_id'],))
-        await m.answer("✅ Payload delivered and connection closed successfully.", reply_markup=admin_kb(), parse_mode='HTML')
-    except Exception as e: await m.answer(f"❌ Transmission Error: {e}", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_broadcast_btn")
-async def admin_broadcast_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("📢 <b>Mass Broadcast Protocol</b>\n\nSend the rich message payload you wish to transmit globally across the grid:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.broadcast_msg)
-
-@dp.message(AdminStates.broadcast_msg)
-async def admin_broadcast_send(message: Message, state: FSMContext):
-    users = db_query("SELECT user_id FROM users", fetchall=True)
-    sent, failed = 0, 0
-    m = await message.answer("⏳ Broadcast protocol initiated... Do not interrupt.", parse_mode='HTML')
-    for u in users:
+# BUG #2, #29 FIX: retry cap + release DB before API call + status guard
+def check_pending_api_orders():
+    while True:
+        conn = None
+        cursor = None
         try:
-            await message.send_copy(chat_id=u[0])
-            sent += 1
-        except Exception: failed += 1
-        await asyncio.sleep(0.06) 
-    await m.edit_text(f"✅ <b>Global Broadcast Complete!</b>\n\n🟢 Nodes reached: {sent}\n🔴 Nodes failed/blocked: {failed}", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
+            if is_bot_maintenance():
+                time.sleep(PENDING_API_CHECK_INTERVAL)
+                continue
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM pending_api_orders WHERE status='pending'")
+            orders = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            conn = None
+            cursor = None
+            for order in orders:
+                conn = get_db()
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT api_pid, name, download_link, demo_video FROM products WHERE id=?", (order["product_id"],))
+                    product = cursor.fetchone()
+                    cursor.execute("SELECT duration FROM plans WHERE id=?", (order["plan_id"],))
+                    plan = cursor.fetchone()
+                    if not product or not product["api_pid"] or not plan:
+                        cursor.close()
+                        conn.close()
+                        conn = None
+                        cursor = None
+                        continue
+                    # BUG #2 FIX: check retry count BEFORE doing anything
+                    retry_count = order["retry_count"] if "retry_count" in order.keys() else 0
+                    if retry_count >= MAX_PENDING_API_RETRIES:
+                        cursor.execute("UPDATE pending_api_orders SET status='failed' WHERE id=? AND status='pending'", (order["id"],))
+                        cursor.execute("UPDATE users SET balance = balance + ? WHERE id=?", (order["amount"], order["user_id"]))
+                        cursor.execute("INSERT INTO transactions (user_id, amount, type, details) VALUES (?,?,'refund','api_failed')", (order["user_id"], order["amount"]))
+                        if order["coupon_id"]:
+                            cursor.execute("UPDATE coupons SET used=0 WHERE id=? AND used=2", (order["coupon_id"],))
+                        if order["spin_reward_id"]:
+                            cursor.execute("UPDATE spin_rewards SET status='active' WHERE id=? AND status='reserved'", (order["spin_reward_id"],))
+                        conn.commit()
+                        try:
+                            safe_send(order["user_id"], f"❌ <b>ORDER FAILED</b>\n\n{product['name']}\n\n💰 ₹{order['amount']} refunded to balance.\n\n✅ Aapka paisa safe hai.")
+                        except Exception:
+                            pass
+                        cursor.close()
+                        conn.close()
+                        conn = None
+                        cursor = None
+                        continue
+                    # BUG #29 FIX: lock row, then release DB before API call
+                    cursor.execute("BEGIN IMMEDIATE")
+                    cursor.execute("UPDATE pending_api_orders SET status='processing' WHERE id=? AND status='pending'", (order["id"],))
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        cursor.close()
+                        conn.close()
+                        conn = None
+                        cursor = None
+                        continue
+                    cursor.execute("SELECT balance FROM users WHERE id=?", (order["user_id"],))
+                    user = cursor.fetchone()
+                    if not user or user["balance"] < order["amount"]:
+                        cursor.execute("UPDATE pending_api_orders SET status='pending' WHERE id=?", (order["id"],))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        conn = None
+                        cursor = None
+                        continue
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"pending api order pre-check error: {e}")
+                    try:
+                        cursor.close()
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = None
+                    cursor = None
+                    continue
+                cursor.close()
+                conn.close()
+                conn = None
+                cursor = None
+                # BUG #28 FIX: API call OUTSIDE transaction/connection
+                duration_str = plan["duration"]
+                api_response = fetch_key_from_api(product["api_pid"], duration_str)
+                license_key, error_msg = parse_api_response(api_response)
+                conn = get_db()
+                cursor = conn.cursor()
+                if not license_key:
+                    # BUG #2 FIX: increment retry_count, revert to pending
+                    cursor.execute("UPDATE pending_api_orders SET status='pending', retry_count=retry_count+1 WHERE id=?", (order["id"],))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                    conn = None
+                    cursor = None
+                    continue
+                try:
+                    cursor.execute("BEGIN IMMEDIATE")
+                    cursor.execute("UPDATE users SET balance = balance - ? WHERE id=? AND balance >= ?", (order["amount"], order["user_id"], order["amount"]))
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        cursor.execute("UPDATE pending_api_orders SET status='pending' WHERE id=?", (order["id"],))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        conn = None
+                        cursor = None
+                        continue
+                    cursor.execute("UPDATE users SET total_orders=total_orders+1, total_spent=total_spent+? WHERE id=?", (order["amount"], order["user_id"]))
+                    cursor.execute("INSERT INTO transactions (user_id, amount, type, details, license_key, product_name, duration) VALUES (?,?,'purchase','api_pending',?,?,?)", (order["user_id"], order["amount"], license_key, product["name"], duration_str))
+                    cursor.execute("INSERT OR IGNORE INTO review_reminders (user_id, product_id, last_reminder_at, reminder_count) VALUES (?,?,?,0)", (order["user_id"], order["product_id"], utc_now_str()))
+                    cursor.execute("UPDATE pending_api_orders SET status='delivered' WHERE id=?", (order["id"],))
+                    if order["coupon_id"]:
+                        cursor.execute("UPDATE coupons SET used=1 WHERE id=?", (order["coupon_id"],))
+                    if order["spin_reward_id"]:
+                        cursor.execute("UPDATE spin_rewards SET status='used' WHERE id=?", (order["spin_reward_id"],))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    logger.error(f"pending api order commit error: {e}")
+                    cursor.execute("UPDATE pending_api_orders SET status='pending' WHERE id=?", (order["id"],))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                    conn = None
+                    cursor = None
+                    continue
+                cursor.close()
+                conn.close()
+                conn = None
+                cursor = None
+                caption = f"""✅ <b>PENDING ORDER DELIVERED!</b>
 
-@dp.callback_query(F.data == "admin_create_coupon")
-async def admin_create_coupon_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("🎟 Enter a highly secure alphanumeric sequence for the Promo Code:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.add_coupon_code)
+<b>{esc(product['name'])}</b>
+⏰ <b>{esc(duration_str)}</b>
 
-@dp.message(AdminStates.add_coupon_code)
-async def admin_coupon_code(m: Message, state: FSMContext):
-    await state.update_data(code=m.text.strip().upper())
-    await m.answer("💰 Enter the monetary reward payload in <b>RUPEES (₹)</b>:", parse_mode='HTML')
-    await state.set_state(AdminStates.add_coupon_amount)
+🔑 <b>YOUR KEY</b>
+<code>{esc(license_key)}</code>
 
-@dp.message(AdminStates.add_coupon_amount)
-async def admin_coupon_amount(m: Message, state: FSMContext):
+⚠️ Key pe click karo—copy ho jayegi!"""
+                markup = InlineKeyboardMarkup(row_width=1)
+                if product["download_link"]:
+                    markup.add(InlineKeyboardButton("📥 Download Files", url=product["download_link"], style="primary"))
+                if product["demo_video"]:
+                    markup.add(InlineKeyboardButton("📺 Demo Video", url=product["demo_video"], style="primary"))
+                markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+                try:
+                    safe_send(order["user_id"], caption, markup)
+                except Exception as e:
+                    logger.warning(f"Pending order notify fail | user={order['user_id']} | {e}")
+                # BUG #34 FIX: commit done, notify admin; failure is logged, not lost
+                try:
+                    notify_admins(f"✅ Pending Order Delivered\n\n👤 User: {order['user_id']}\n📦 {product['name']}\n💰 ₹{order['amount']}")
+                except Exception as e:
+                    logger.error(f"Pending order admin notify fail | {e}")
+        except Exception as e:
+            logger.error(f"check_pending_api_orders error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(PENDING_API_CHECK_INTERVAL)
+
+def check_spin_reward_expiry():
+    while True:
+        conn = None
+        cursor = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            now_str = utc_now_str()
+            cursor.execute(
+                "UPDATE spin_rewards SET status='expired' WHERE status IN ('active','reserved') AND expires_at < ?",
+                (now_str,)
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error(f"check_spin_reward_expiry error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(SPIN_EXPIRY_CHECK_INTERVAL)
+
+def check_spin_reward_notifications():
+    while True:
+        conn = None
+        cursor = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            now = utc_now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            warning_time = (now + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute(
+                "SELECT id, user_id, amount, expires_at FROM spin_rewards WHERE status='active' AND warning_sent=0 AND expires_at > ? AND expires_at <= ?",
+                (now_str, warning_time)
+            )
+            for reward in cursor.fetchall():
+                cursor.execute("UPDATE spin_rewards SET warning_sent=1 WHERE id=? AND warning_sent=0", (reward["id"],))
+                conn.commit()
+                if cursor.rowcount != 1:
+                    continue
+                try:
+                    expiry_time_utc = datetime.strptime(reward["expires_at"], '%Y-%m-%d %H:%M:%S')
+                    expiry_time_ist = expiry_time_utc + timedelta(hours=5, minutes=30)
+                    expiry_display = expiry_time_ist.strftime('%I:%M %p')
+                    warning_text = f"""⚠️ <b>Reward Expire Hone Wala Hai!</b>
+
+💰 ₹{reward['amount']} Cash Reward
+⏰ Sirf 5 minute bacha hai!
+⏰ {expiry_display} tak valid
+
+❌ Abhi purchase nahi kiya toh expire ho jaega!
+👇 Jaldi karo!"""
+                    markup = InlineKeyboardMarkup(row_width=1)
+                    markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now", style="danger"))
+                    safe_send(reward["user_id"], warning_text, markup)
+                except Exception as e:
+                    logger.error(f"spin warning send error: {e}")
+            cursor.execute(
+                "SELECT id, user_id, amount FROM spin_rewards WHERE status='expired' AND expire_sent=0",
+            )
+            for reward in cursor.fetchall():
+                cursor.execute("UPDATE spin_rewards SET expire_sent=1 WHERE id=? AND expire_sent=0", (reward["id"],))
+                conn.commit()
+                if cursor.rowcount != 1:
+                    continue
+                try:
+                    expire_text = f"""❌ <b>Spin Reward Expire Ho Gaya!</b>
+
+💰 ₹{reward['amount']} Cash Reward
+
+🍀 Kal phir spin karo — next time jaldi use karna!"""
+                    markup = InlineKeyboardMarkup(row_width=1)
+                    markup.add(InlineKeyboardButton("🎮 Lucky Spin", callback_data="lucky_spin", style="success"))
+                    safe_send(reward["user_id"], expire_text, markup)
+                except Exception as e:
+                    logger.error(f"spin expiry send error: {e}")
+        except Exception as e:
+            logger.error(f"check_spin_reward_notifications error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(60)
+
+def check_review_reminders():
+    while True:
+        conn = None
+        cursor = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM review_reminders WHERE review_submitted=0 AND reminder_count < ?", (MAX_REVIEW_REMINDERS,))
+            for reminder in cursor.fetchall():
+                last_reminder = reminder["last_reminder_at"]
+                # BUG #7 FIX: NULL-safe — treat NULL as now
+                if not last_reminder:
+                    last_reminder = utc_now_str()
+                    cursor.execute("UPDATE review_reminders SET last_reminder_at=? WHERE id=?", (last_reminder, reminder["id"]))
+                    conn.commit()
+                try:
+                    last_time = datetime.strptime(last_reminder, '%Y-%m-%d %H:%M:%S')
+                    if (utc_now() - last_time).total_seconds() >= 600:
+                        cursor.execute("SELECT name FROM products WHERE id=?", (reminder["product_id"],))
+                        product = cursor.fetchone()
+                        product_name = product["name"] if product else "Product"
+                        cursor.execute("UPDATE review_reminders SET reminder_count=reminder_count+1, last_reminder_at=? WHERE id=?", (utc_now_str(), reminder["id"]))
+                        conn.commit()
+                        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("⭐ Rate Now", callback_data=f"review_{reminder['product_id']}_5", style="primary"))
+                        safe_send(reminder["user_id"], f"⏰ REVIEW REMINDER\n\nAapne {esc(product_name)} purchase kiya tha.\n\nKaisa raha experience?\n\nPlease review de do!", markup)
+                except Exception as e:
+                    logger.error(f"review reminder inner error: {e}")
+            cursor.execute("UPDATE review_reminders SET review_submitted=1 WHERE reminder_count >= ? AND review_submitted=0", (MAX_REVIEW_REMINDERS,))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"check_review_reminders error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(REVIEW_REMINDER_INTERVAL)
+
+def cleanup_stale_pending_orders():
+    while True:
+        conn = None
+        cursor = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cutoff = (utc_now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute("SELECT id, coupon_id, spin_reward_id FROM pending_api_orders WHERE status='pending' AND created_at < ?", (cutoff,))
+            stale = cursor.fetchall()
+            for o in stale:
+                if o["coupon_id"]:
+                    cursor.execute("UPDATE coupons SET used=0 WHERE id=? AND used=2", (o["coupon_id"],))
+                if o["spin_reward_id"]:
+                    cursor.execute("UPDATE spin_rewards SET status='expired' WHERE id=? AND status='reserved'", (o["spin_reward_id"],))
+                cursor.execute("UPDATE pending_api_orders SET status='expired' WHERE id=?", (o["id"],))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"cleanup_stale_pending_orders error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(3600)
+
+def reset_stuck_processing():
+    while True:
+        conn = None
+        cursor = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE pending_payments SET status='pending' WHERE status='processing'")
+            cursor.execute("UPDATE pending_api_orders SET status='pending' WHERE status='processing'")
+            conn.commit()
+        except Exception as e:
+            logger.error(f"reset_stuck_processing error: {e}")
+        finally:
+            try:
+                if cursor:
+                    cursor.close()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        time.sleep(PROCESSING_RESET_INTERVAL)
+
+def reset_stuck_processing_once():
+    conn = None
+    cursor = None
     try:
-        await state.update_data(amount=float(m.text)) 
-        await m.answer("👥 Enter the exact maximum threshold uses for this code:", parse_mode='HTML')
-        await state.set_state(AdminStates.add_coupon_uses)
-    except ValueError: await m.answer("❌ Non-numerical data detected. Aborting.")
-
-@dp.message(AdminStates.add_coupon_uses)
-async def admin_coupon_uses(m: Message, state: FSMContext):
-    try:
-        uses = int(m.text)
-        data = await state.get_data()
-        db_query("INSERT OR REPLACE INTO coupons (code, amount, uses_left) VALUES (?, ?, ?)", (data['code'], data['amount'], uses))
-        await m.answer(f"✅ Protocol <b>{data['code']}</b> encoded!\nReward Vector: {fmt_curr(data['amount'])}\nThreshold Limit: {uses} executions.", reply_markup=admin_kb(), parse_mode='HTML')
-        await state.clear()
-    except ValueError: await m.answer("❌ Non-numerical data detected. Aborting.")
-
-# ==============================================================================
-# 22. ADMIN RESELLER & SPIN SETTINGS
-# ==============================================================================
-@dp.callback_query(F.data == "admin_reseller_menu")
-async def admin_reseller_menu(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    status_check = db_query("SELECT value FROM settings WHERE key='reseller_system_status'", fetchone=True)
-    sys_status = status_check[0] if status_check else "ON"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Grant Reseller Rights", callback_data="reseller_make", style="success"), InlineKeyboardButton(text="➖ Revoke Reseller", callback_data="reseller_remove", style="danger")],
-        [InlineKeyboardButton(text="📋 Audit Active Resellers", callback_data="reseller_view", style="primary")],
-        [InlineKeyboardButton(text=f"{'🟢' if sys_status == 'ON' else '🔴'} Auto-Upgrade System: {sys_status}", callback_data="admin_toggle_reseller_sys", style="success" if sys_status == 'ON' else "danger")], 
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text("👑 <b>Wholesale Reseller Protocols</b>\nSelect administrative action:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "admin_toggle_reseller_sys")
-async def toggle_reseller_sys(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    res = db_query("SELECT value FROM settings WHERE key='reseller_system_status'", fetchone=True)
-    current = res[0] if res else 'ON'
-    new_status = 'OFF' if current == 'ON' else 'ON'
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('reseller_system_status', ?)", (new_status,))
-    await admin_reseller_menu(call)
-
-@dp.callback_query(F.data.in_(["reseller_make", "reseller_remove"]))
-async def reseller_prompt_id(call: CallbackQuery, state: FSMContext):
-    action = call.data
-    await state.update_data(reseller_action=action)
-    await call.message.edit_text("👤 Identify target node. Input <b>User ID</b> or <b>@username</b>:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.reseller_manage_id)
-
-@dp.message(AdminStates.reseller_manage_id)
-async def process_reseller_manage(m: Message, state: FSMContext):
-    data = await state.get_data()
-    target = m.text.strip()
-    if target.startswith('@'): target = target[1:]
-    user_q = db_query("SELECT user_id, first_name FROM users WHERE user_id=? OR username=? COLLATE NOCASE", (target, target), fetchone=True)
-    if not user_q: return await m.answer("❌ Target completely ghosted. Not in database.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    u_id, u_name = user_q[0], user_q[1]
-    if data['reseller_action'] == "reseller_make":
-        db_query("UPDATE users SET is_reseller=1, reseller_since=?, account_type='Reseller' WHERE user_id=?", (datetime.now().strftime("%Y-%m-%d"), u_id))
-        await m.answer(f"✅ Credentials upgraded. <b>{u_name}</b> (<code>{u_id}</code>) has reseller rights.", reply_markup=admin_kb(), parse_mode='HTML')
-    else:
-        db_query("UPDATE users SET is_reseller=0, account_type='Regular' WHERE user_id=?", (u_id,))
-        await m.answer(f"✅ Credentials revoked. <b>{u_name}</b> (<code>{u_id}</code>) is back to regular user.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "reseller_view")
-async def reseller_view(call: CallbackQuery):
-    resellers = db_query("SELECT user_id, first_name, username FROM users WHERE is_reseller=1", fetchall=True)
-    if not resellers: return await call.message.edit_text("📋 Zero active resellers found.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    text = "👑 <b><u>ACTIVE RESELLER AUDIT LOG</u></b> 👑\n━━━━━━━━━━━━━━━━━━\n"
-    for r in resellers:
-        uname = f"(@{r[2]})" if r[2] else ""
-        text += f"👤 {r[1]} {uname}\n🆔 <code>{r[0]}</code>\n\n"
-    await call.message.edit_text(text, reply_markup=admin_back_kb(), parse_mode='HTML')
-
-
-@dp.callback_query(F.data == "admin_toggle_bot")
-async def toggle_bot(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    res = db_query("SELECT value FROM settings WHERE key='bot_status'", fetchone=True)
-    current = res[0] if res else 'ON'
-    new_status = 'OFF' if current == 'ON' else 'ON'
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('bot_status', ?)", (new_status,))
-    await call.message.edit_reply_markup(reply_markup=admin_kb())
-
-
-@dp.callback_query(F.data == "admin_set_video")
-async def admin_set_video_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("📹 Input direct streaming / YouTube Link for Tutorial system:\n<i>(Or type 'None' to clear registry):</i>", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_howto_video)
-
-@dp.message(AdminStates.wait_for_howto_video)
-async def exec_set_video(m: Message, state: FSMContext):
-    link = m.text.strip()
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('how_to_video', ?)", (link,))
-    await m.answer("✅ Routing complete. Video linked.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-
-@dp.callback_query(F.data == "admin_edit_emojis")
-async def admin_edit_emojis(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    rows = db_query("SELECT key, value FROM settings WHERE key LIKE 'emoji_%' ORDER BY key", fetchall=True)
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for row in rows:
-        key = row[0]
-        slot = key.replace("emoji_", "")
-        current_id = row[1] if row[1] else "Not set"
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"{slot} (ID: {current_id})", callback_data=f"edit_emoji_{slot}", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("🎨 <b>Edit All Emojis</b>\nChoose an emoji slot to change its ID:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("edit_emoji_"))
-async def admin_edit_emoji_prompt(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    slot = call.data.split("edit_emoji_", 1)[1]
-    await state.update_data(emoji_slot=slot)
-    current = get_setting(f"emoji_{slot}", "Not set")
-    await call.message.edit_text(f"✏️ Enter new emoji ID for <b>{slot}</b>:\nCurrent: {current}\n(Leave empty to reset to default)", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_emoji_slot)
-
-@dp.message(AdminStates.wait_for_emoji_slot)
-async def save_emoji_slot(m: Message, state: FSMContext):
-    data = await state.get_data()
-    slot = data['emoji_slot']
-    new_id = m.text.strip()
-    if new_id == "":
-        db_query("DELETE FROM settings WHERE key=?", (f"emoji_{slot}",))
-        await m.answer(f"✅ Reset emoji for '{slot}' to default.", reply_markup=admin_kb(), parse_mode='HTML')
-    else:
-        if not new_id.isdigit():
-            await m.answer("❌ Invalid ID! Must be numeric.", reply_markup=admin_kb(), parse_mode='HTML')
-            return
-        set_setting(f"emoji_{slot}", new_id)
-        await m.answer(f"✅ Emoji for '{slot}' updated to ID {new_id}.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_edit_ui_menu")
-async def admin_edit_ui_menu(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Edit Start Menu Text", callback_data="edit_ui_start", style="primary")],
-        [InlineKeyboardButton(text="Edit VIP Menu Text", callback_data="edit_ui_vip", style="primary")],
-        [InlineKeyboardButton(text="Edit Add Balance Text", callback_data="edit_ui_add_balance", style="primary")],
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text("✏️ <b>Edit User Interface Texts</b>\nSelect which text you want to modify:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("edit_ui_"))
-async def admin_edit_ui_prompt(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    ui_key = call.data.split("_")[2]
-    await state.update_data(ui_key=ui_key)
-    current_text = get_ui_text(ui_key)
-    await call.message.edit_text(f"📝 Send the new text for <b>{ui_key.upper()}</b> menu.\n\nCurrent text:\n{current_text}", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.edit_ui_text)
-
-@dp.message(AdminStates.edit_ui_text)
-async def admin_save_ui_text(m: Message, state: FSMContext):
-    data = await state.get_data()
-    ui_key = data['ui_key']
-    new_text = m.text
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (f"ui_{ui_key}", new_text))
-    await m.answer(f"✅ UI text <b>{ui_key}</b> updated successfully!", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_edit_reseller_price")
-async def admin_edit_reseller_price_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    prods = db_query("SELECT id, name, category, panel_name, reseller_price FROM products ORDER BY category, panel_name", fetchall=True)
-    if not prods: return await call.message.edit_text("No products to edit.", reply_markup=admin_back_kb(), parse_mode='HTML')
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for p in prods:
-        panel_name = p[3] if p[3] is not None else ""
-        r_price = safe_float(p[4])
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"{p[2]} - {panel_name} - {p[1]} (₹{r_price:.2f})", callback_data=f"edit_reseller_{p[0]}", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("👑 <b>Edit Reseller Price per Product</b>\nSelect a product to change its wholesale price:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("edit_reseller_"))
-async def admin_edit_reseller_price_prompt(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    prod_id = int(call.data.split("_")[2])
-    await state.update_data(edit_reseller_prod_id=prod_id)
-    await call.message.edit_text("💰 Enter the new <b>Reseller Price</b> in Rupees (₹) for this product:", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.edit_reseller_price)
-
-@dp.message(AdminStates.edit_reseller_price)
-async def admin_save_reseller_price(m: Message, state: FSMContext):
-    try:
-        new_price = float(m.text)
-        data = await state.get_data()
-        prod_id = data['edit_reseller_prod_id']
-        db_query("UPDATE products SET reseller_price=? WHERE id=?", (new_price, prod_id))
-        await m.answer(f"✅ Reseller price updated to {fmt_curr(new_price)} for product ID {prod_id}.", reply_markup=admin_kb(), parse_mode='HTML')
-        await state.clear()
-    except ValueError: await m.answer("❌ Invalid number. Please enter a valid price.")
-
-@dp.callback_query(F.data == "admin_set_reseller_fee")
-async def admin_set_reseller_fee(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("💰 Enter the new <b>Reseller Setup Fee</b> in Rupees (₹):\nCurrent: " + get_setting("reseller_setup_fee", "200.0"), reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_reseller_setup_fee)
-
-@dp.message(AdminStates.wait_for_reseller_setup_fee)
-async def admin_save_reseller_fee(m: Message, state: FSMContext):
-    try:
-        fee = float(m.text)
-        set_setting("reseller_setup_fee", str(fee))
-        await m.answer(f"✅ Reseller setup fee updated to {fmt_curr(fee)}.", reply_markup=admin_kb(), parse_mode='HTML')
-        await state.clear()
-    except ValueError: await m.answer("❌ Invalid number. Please enter a valid amount.")
-
-@dp.callback_query(F.data == "admin_set_reseller_min")
-async def admin_set_reseller_min(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("💳 Enter the new <b>Minimum Balance</b> required to become reseller (₹):\nCurrent: " + get_setting("reseller_min_balance", "500.0"), reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_reseller_min_balance)
-
-@dp.message(AdminStates.wait_for_reseller_min_balance)
-async def admin_save_reseller_min(m: Message, state: FSMContext):
-    try:
-        min_bal = float(m.text)
-        set_setting("reseller_min_balance", str(min_bal))
-        await m.answer(f"✅ Minimum reseller balance updated to {fmt_curr(min_bal)}.", reply_markup=admin_kb(), parse_mode='HTML')
-        await state.clear()
-    except ValueError: await m.answer("❌ Invalid number. Please enter a valid amount.")
-
-@dp.callback_query(F.data == "admin_set_support_links")
-async def admin_set_support_links(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📞 Set Telegram Link", callback_data="admin_set_telegram", style="primary")],
-        [InlineKeyboardButton(text="📱 Set WhatsApp Link", callback_data="admin_set_whatsapp", style="primary")],
-        [InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")]
-    ])
-    await call.message.edit_text("📌 <b>Support Contact Links</b>\nSet the URLs for Telegram and WhatsApp support:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data == "admin_set_telegram")
-async def admin_set_telegram(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("✈️ Enter the Telegram contact URL (e.g., https://t.me/YourSupport):", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_support_telegram)
-
-@dp.message(AdminStates.wait_for_support_telegram)
-async def save_telegram_link(m: Message, state: FSMContext):
-    link = m.text.strip()
-    set_setting("support_telegram", link)
-    await m.answer("✅ Telegram support link updated!", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_set_whatsapp")
-async def admin_set_whatsapp(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("📱 Enter the WhatsApp contact URL (e.g., https://wa.me/1234567890):", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_support_whatsapp)
-
-@dp.message(AdminStates.wait_for_support_whatsapp)
-async def save_whatsapp_link(m: Message, state: FSMContext):
-    link = m.text.strip()
-    set_setting("support_whatsapp", link)
-    await m.answer("✅ WhatsApp support link updated!", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_set_category_emojis")
-async def admin_set_category_emojis(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for cat in FIXED_CATEGORIES:
-        current = get_setting(f"cat_emoji_{cat}", "Not set")
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"{cat} (ID: {current})", callback_data=f"set_cat_emoji_{cat}", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("🎨 <b>Set Category Emojis</b>\nChoose a category to set its custom emoji ID:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("set_cat_emoji_"))
-async def admin_set_category_emoji_prompt(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    category = call.data.split("set_cat_emoji_", 1)[1]
-    await state.update_data(cat_emoji_category=category)
-    await call.message.edit_text(f"🎨 Enter the emoji ID for <b>{category}</b>:\n(Leave empty to reset to default)", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_category_emoji)
-
-@dp.message(AdminStates.wait_for_category_emoji)
-async def save_category_emoji(m: Message, state: FSMContext):
-    data = await state.get_data()
-    category = data['cat_emoji_category']
-    emoji_id = m.text.strip()
-    if emoji_id == "":
-        db_query("DELETE FROM settings WHERE key=?", (f"cat_emoji_{category}",))
-        await m.answer(f"✅ Reset emoji for {category} to default.", reply_markup=admin_kb(), parse_mode='HTML')
-    else:
-        if not emoji_id.isdigit():
-            await m.answer("❌ Invalid ID! Must be numeric.", reply_markup=admin_kb(), parse_mode='HTML')
-            return
-        set_setting(f"cat_emoji_{category}", emoji_id)
-        await m.answer(f"✅ Emoji set for {category} successfully!", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_set_panel_emojis")
-async def admin_set_panel_emojis(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    panels = db_query("SELECT DISTINCT panel_name FROM products WHERE panel_name != '' ORDER BY panel_name", fetchall=True)
-    if not panels:
-        await call.message.edit_text("No panel names found in products.", reply_markup=admin_back_kb(), parse_mode='HTML')
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for p in panels:
-        panel = p[0]
-        current = get_setting(f"panel_emoji_{panel}", "Not set")
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"{panel} (ID: {current})", callback_data=f"set_panel_emoji_{panel}", style="primary")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="Back to Admin", callback_data="admin_panel_back", icon_custom_emoji_id=get_emoji_icon("back"), style="danger")])
-    await call.message.edit_text("🖼 <b>Set Panel Emojis</b>\nChoose a panel name to set its custom emoji ID:", reply_markup=kb, parse_mode='HTML')
-
-@dp.callback_query(F.data.startswith("set_panel_emoji_"))
-async def admin_set_panel_emoji_prompt(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    panel_name = call.data.split("set_panel_emoji_", 1)[1]
-    await state.update_data(panel_emoji_name=panel_name)
-    await call.message.edit_text(f"🎨 Enter the emoji ID for panel <b>{panel_name}</b>:\n(Leave empty to reset to default)", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_panel_emoji_id)
-
-@dp.message(AdminStates.wait_for_panel_emoji_id)
-async def save_panel_emoji(m: Message, state: FSMContext):
-    data = await state.get_data()
-    panel_name = data['panel_emoji_name']
-    emoji_id = m.text.strip()
-    if emoji_id == "":
-        db_query("DELETE FROM settings WHERE key=?", (f"panel_emoji_{panel_name}",))
-        await m.answer(f"✅ Reset emoji for panel '{panel_name}'.", reply_markup=admin_kb(), parse_mode='HTML')
-    else:
-        if not emoji_id.isdigit():
-            await m.answer("❌ Invalid ID! Must be numeric.", reply_markup=admin_kb(), parse_mode='HTML')
-            return
-        set_setting(f"panel_emoji_{panel_name}", emoji_id)
-        await m.answer(f"✅ Emoji set for panel '{panel_name}'!", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-# ==============================================================================
-# 23. ADMIN PAYMENT GATEWAY (SGVIP) SETUP
-# ==============================================================================
-@dp.callback_query(F.data == "admin_setup_sgvip")
-async def setup_sgvip_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    current_token = get_setting("sgvip_token", "Not set")
-    await call.message.edit_text(
-        f"⚙️ <b>SGVIP PAYMENT GATEWAY SETUP</b>\n\n"
-        f"🔑 Current API Token: {current_token[:8] if current_token != 'Not set' else 'Not set'}... (hidden)\n\n"
-        f"Send the new <b>SGVIP API Token</b>:\n<i>(Type /cancel to abort)</i>",
-        reply_markup=admin_back_kb(), parse_mode='HTML'
-    )
-    await state.set_state(AdminStates.wait_for_sgvip_token)
-
-@dp.message(AdminStates.wait_for_sgvip_token)
-async def setup_sgvip_token(m: Message, state: FSMContext):
-    if m.text == '/cancel':
-        await state.clear()
-        return await m.answer("Sequence killed.", reply_markup=admin_kb(), parse_mode='HTML')
-    token = m.text.strip()
-    if len(token) < 8:
-        return await m.answer("❌ Invalid API Token! Please send a valid token.", parse_mode='HTML')
-    set_setting("sgvip_token", token)
-    await m.answer(f"✅ <b>SGVIP Payment Gateway configured successfully!</b>\n\n🔑 API Token: Saved\n\nGateway is now ready for payments.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-# ==============================================================================
-# 24. ADMIN BINANCE SETUP
-# ==============================================================================
-@dp.callback_query(F.data == "admin_setup_binance")
-async def setup_binance_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("🪙 <b>CRYPTO NODE INIT: Step 1/3</b>\nInput Master <b>Binance API Key</b>:\n<i>(Type /cancel to halt protocol)</i>", reply_markup=admin_back_kb(), parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_binance_api)
-
-@dp.message(AdminStates.wait_for_binance_api)
-async def setup_binance_api(m: Message, state: FSMContext):
-    if m.text == '/cancel':
-        await state.clear()
-        return await m.answer("Sequence aborted.", reply_markup=admin_kb(), parse_mode='HTML')
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('binance_api', ?)", (m.text.strip(),))
-    await m.answer("🪙 <b>CRYPTO NODE INIT: Step 2/3</b>\nNow inject the highly secure <b>Binance Secret Key</b>:", parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_binance_secret)
-
-@dp.message(AdminStates.wait_for_binance_secret)
-async def setup_binance_secret(m: Message, state: FSMContext):
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('binance_secret', ?)", (m.text.strip(),))
-    await m.answer("🪙 <b>CRYPTO NODE INIT: Step 3/3</b>\nFinal variable: Set the public <b>USDT Deposit Address (TRC20/BEP20)</b>\nUsers will broadcast to this ledger:", parse_mode='HTML')
-    await state.set_state(AdminStates.wait_for_binance_address)
-
-@dp.message(AdminStates.wait_for_binance_address)
-async def setup_binance_address(m: Message, state: FSMContext):
-    db_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('binance_address', ?)", (m.text.strip(),))
-    await m.answer("✅ <b>Blockchain node synchronized.</b> Crypto gateway is fully armed.", reply_markup=admin_kb(), parse_mode='HTML')
-    await state.clear()
-
-# ==============================================================================
-# 25. BOOTSTRAPPING & MAIN
-# ==============================================================================
-async def main() -> None:
-    init_db()
-    logger.info("Initializing DB structure...")
-    migrate_categories()
-    asyncio.create_task(auto_verify_task())
-    logger.info("SGVIP Auto-Verifier Daemon Running in Background.")
-    logger.info("🚀 CORE SYSTEM IS FULLY OPERATIONAL...")
-    try:
-        await dp.start_polling(bot)
-    except Exception as err:
-        logger.error(f"Critical System Failure in Polling: {err}")
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE pending_payments SET status='pending' WHERE status='processing'")
+        cursor.execute("UPDATE pending_api_orders SET status='pending' WHERE status='processing'")
+        conn.commit()
+    except Exception as e:
+        logger.error(f"reset_stuck_processing_once error: {e}")
     finally:
-        await bot.session.close()
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
-if __name__ == "__main__":
+# BUG #27 FIX: use sqlite backup API instead of shutil.copy
+def emergency_backup(reason="Unknown"):
+    backup_path = None
+    success = False
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("System shutting down gracefully. Goodbye.")
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        timestamp = utc_now().strftime('%Y%m%d_%H%M%S')
+        backup_path = os.path.join(BACKUP_DIR, f"emergency_backup_{timestamp}.db")
+        src = get_db()
+        dst = sqlite3.connect(backup_path)
+        with dst:
+            src.backup(dst)
+        dst.close()
+        src.close()
+        for admin_id in get_admin_ids():
+            try:
+                with open(backup_path, 'rb') as f:
+                    bot.send_document(admin_id, f, caption=f"🚨 <b>EMERGENCY BACKUP</b>\n\n⚠️ Reason: {esc(reason)}\n📅 Time: {utc_now_str()}", parse_mode="HTML")
+                success = True
+            except Exception as e:
+                logger.error(f"backup send fail {admin_id}: {e}")
+        return success
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+        return False
+    finally:
+        if success and backup_path and os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except Exception as e:
+                logger.error(f"backup cleanup fail: {e}")
+
+# ============ BOT INIT ============
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+
+# ============ UI TEXT ============
+def get_welcome_text(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, balance FROM users WHERE id=?", (user_id,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    username = user["username"] if user and user["username"] else "User"
+    balance = user["balance"] if user else 0
+    return f"""🏪 <b>YOUR STORE NAME</b> 🏪
+━━━━━━━━━━━━━━━━━━━━━
+
+👋 Welcome, <b>{esc(username)}</b>! 🤩
+
+⭐ <b>STORE HIGHLIGHTS</b> ⭐
+
+🔑 Premium Game Keys
+⚡ Instant Delivery 24/7
+🔒 100% Secure Payment
+💸 Best Prices Guaranteed
+📞 Professional Support
+
+━━━━━━━━━━━━━━━━━━━━━
+👤 ID: <code>{user_id}</code>
+💰 Balance: ₹{balance}
+━━━━━━━━━━━━━━━━━━━━━
+
+🚀 <b>Tap Shop Now to Start!</b>"""
+
+def get_main_menu(user_id):
+    if is_banned(user_id):
+        return InlineKeyboardMarkup().add(InlineKeyboardButton("📞 Support", callback_data="support", style="danger"))
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🔑 Shop Key", callback_data="shop_now", style="danger"), InlineKeyboardButton("👤 My Profile", callback_data="profile", style="primary"))
+    markup.add(InlineKeyboardButton("💰 Add Balance", callback_data="add_balance", style="success"), InlineKeyboardButton("📜 All History", callback_data="history", style="primary"))
+    markup.add(InlineKeyboardButton("🎬 Tutorial", callback_data="tutorial", style="danger"), InlineKeyboardButton("🤝 Become Reseller", callback_data="reseller_info" if not is_reseller(user_id) else "reseller_panel", style="success"))
+    markup.add(InlineKeyboardButton("📸 Selling Proof", callback_data="selling_proof", style="danger"), InlineKeyboardButton("📞 Support", callback_data="support", style="success"))
+    markup.add(InlineKeyboardButton("❓ FAQ", callback_data="faq_menu", style="primary"), InlineKeyboardButton("🎁 Referral", callback_data="referral", style="success"))
+    if not is_reseller(user_id):
+        markup.add(InlineKeyboardButton("🎮 Lucky Spin", callback_data="lucky_spin", style="success"))
+    if user_id in get_admin_ids():
+        markup.add(InlineKeyboardButton("🔧 Admin", callback_data="admin_panel", style="primary"))
+    return markup
+
+# ============ ADMIN PANEL ============
+def build_admin_markup(buttons, back_callback="admin_panel", back_text="◀️ Back to Admin Panel"):
+    markup = InlineKeyboardMarkup(row_width=2)
+    if len(buttons) % 2 == 1:
+        paired = buttons[:-1]
+        last = buttons[-1]
+        for i in range(0, len(paired), 2):
+            markup.add(
+                InlineKeyboardButton(paired[i][0], callback_data=paired[i][1], style=paired[i][2]),
+                InlineKeyboardButton(paired[i+1][0], callback_data=paired[i+1][1], style=paired[i+1][2])
+            )
+        markup.add(InlineKeyboardButton(last[0], callback_data=last[1], style=last[2]))
+    else:
+        for i in range(0, len(buttons), 2):
+            markup.add(
+                InlineKeyboardButton(buttons[i][0], callback_data=buttons[i][1], style=buttons[i][2]),
+                InlineKeyboardButton(buttons[i+1][0], callback_data=buttons[i+1][1], style=buttons[i+1][2])
+            )
+    markup.add(InlineKeyboardButton(back_text, callback_data=back_callback, style="danger"))
+    return markup
+
+def get_admin_panel(user_id):
+    if user_id == ADMIN_USER_ID:
+        buttons = [
+            ("👑 Dashboard", "admin_dashboard", "primary"),
+            ("📊 Analytics", "admin_analytics", "primary"),
+            ("📦 Products", "admin_products", "primary"),
+            ("💰 Payments", "admin_payments", "success"),
+            ("👥 Users", "admin_users", "primary"),
+            ("💬 Support", "admin_support", "success"),
+            ("⚙️ Settings", "admin_settings", "primary"),
+            ("📢 Broadcast", "admin_broadcast", "primary"),
+        ]
+    else:
+        buttons = [
+            ("👑 Dashboard", "admin_dashboard", "primary"),
+            ("📊 Analytics", "admin_analytics", "primary"),
+            ("📦 Products", "admin_products", "primary"),
+            ("👥 Users", "admin_users", "primary"),
+            ("💬 Support", "admin_support", "success"),
+            ("📢 Broadcast", "admin_broadcast", "primary"),
+        ]
+    return build_admin_markup(buttons, "back_main", "◀️ Back to Main")
+
+def get_admin_products_menu(user_id):
+    if user_id == ADMIN_USER_ID:
+        buttons = [
+            ("➕ Add Product", "admin_add_product", "success"),
+            ("📋 Manage", "admin_manage_products", "primary"),
+            ("🔧 Maintenance", "admin_maintenance_products", "danger"),
+            ("💰 Reseller", "admin_reseller_prices", "success"),
+            ("🎬 Tutorial Video", "admin_tutorial_video", "danger"),
+        ]
+    else:
+        buttons = [
+            ("📋 Manage", "admin_manage_products", "primary"),
+            ("🔧 Maintenance", "admin_maintenance_products", "danger"),
+            ("🎬 Tutorial Video", "admin_tutorial_video", "danger"),
+        ]
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_payments_menu(user_id):
+    if user_id == ADMIN_USER_ID:
+        buttons = [
+            ("💰 Deposits", "admin_deposit_requests", "success"),
+            ("📱 QR Code", "admin_change_qr", "primary"),
+            ("🔗 Manual UPI", "admin_change_manual_upi", "primary"),
+            ("💳 Min Deposit", "admin_min_deposit", "primary"),
+            ("💸 Res Fee", "admin_reseller_fee", "success"),
+            ("💳 Reseller Min Balance", "admin_min_balance", "primary"),
+        ]
+    else:
+        buttons = [
+            ("💸 Res Fee", "admin_reseller_fee", "success"),
+            ("💳 Reseller Min Balance", "admin_min_balance", "primary"),
+        ]
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_users_menu(user_id):
+    if user_id == ADMIN_USER_ID:
+        buttons = [
+            ("💰 Add Balance", "admin_add_balance", "success"),
+            ("🚫 Ban User", "admin_ban_user", "danger"),
+            ("✅ Unban User", "admin_unban_user", "success"),
+            ("👑 Admins", "manage_admins", "primary"),
+            ("📸 Reviews", "admin_reviews", "primary"),
+        ]
+    else:
+        buttons = [
+            ("🚫 Ban User", "admin_ban_user", "danger"),
+            ("✅ Unban User", "admin_unban_user", "success"),
+            ("📸 Reviews", "admin_reviews", "primary"),
+        ]
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_support_menu(user_id):
+    if user_id == ADMIN_USER_ID:
+        buttons = [
+            ("🎫 Tickets", "admin_tickets", "success"),
+            ("💬 Contacts", "admin_support_contacts", "primary"),
+            ("📸 Selling Proof Link", "admin_selling_proof", "danger"),
+            ("❓ FAQ Manager", "admin_faq_menu", "primary"),
+        ]
+    else:
+        buttons = [
+            ("🎫 Tickets", "admin_tickets", "success"),
+            ("❓ FAQ Manager", "admin_faq_menu", "primary"),
+        ]
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_settings_menu(user_id):
+    if user_id == ADMIN_USER_ID:
+        buttons = [
+            ("🔧 Maintenance", "admin_bot_maintenance", "danger"),
+            ("💾 Backup", "admin_backup", "success"),
+            ("📂 Restore", "admin_restore", "danger"),
+            ("📁 Export CSV", "admin_csv_menu", "primary"),
+            ("📝 Admin Logs", "admin_logs_view", "primary"),
+        ]
+    else:
+        buttons = []
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_analytics_menu():
+    buttons = [
+        ("📈 Today", "admin_today_stats", "primary"),
+        ("📅 Weekly", "admin_weekly_stats", "primary"),
+        ("🏆 Top Products", "admin_top_products", "primary"),
+        ("👥 Users", "admin_user_growth", "primary"),
+        ("💰 Revenue Report", "admin_revenue_report", "success"),
+    ]
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_broadcast_menu():
+    buttons = [
+        ("📢 All Users", "admin_broadcast_all", "primary"),
+        ("✅ Verified", "admin_broadcast_verified", "primary"),
+        ("👥 Inactive", "admin_broadcast_inactive", "primary"),
+        ("🤝 Resellers", "admin_broadcast_resellers", "primary"),
+        ("💰 Has Balance", "admin_broadcast_balance", "primary"),
+        ("📸 Media Broadcast", "admin_broadcast_media", "success"),
+    ]
+    return build_admin_markup(buttons, "admin_panel")
+
+def get_admin_csv_menu():
+    buttons = [
+        ("👥 Users", "csv_export_users", "primary"),
+        ("💰 Transactions", "csv_export_transactions", "primary"),
+        ("📱 Deposits", "csv_export_deposits", "primary"),
+        ("📦 Orders", "csv_export_orders", "primary"),
+    ]
+    return build_admin_markup(buttons, "admin_settings")
+
+def get_admin_faq_menu():
+    buttons = [
+        ("📋 View All", "faq_view_all", "primary"),
+        ("➕ Add FAQ", "faq_add", "success"),
+        ("➖ Remove FAQ", "faq_remove_menu", "danger"),
+    ]
+    return build_admin_markup(buttons, "admin_support")
+
+def get_admin_panel_header():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as c FROM users")
+    total_users = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE type='purchase'")
+    total_orders = cursor.fetchone()["c"]
+    cursor.execute("SELECT COALESCE(SUM(balance),0) as t FROM users")
+    total_balance = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='purchase'")
+    lifetime_earnings = cursor.fetchone()["t"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE DATE(joined_at)=?", (date.today().isoformat(),))
+    today_users = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE type='purchase' AND DATE(created_at)=?", (date.today().isoformat(),))
+    today_orders = cursor.fetchone()["c"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='purchase' AND DATE(created_at)=?", (date.today().isoformat(),))
+    today_revenue = cursor.fetchone()["t"]
+    cursor.execute("SELECT COUNT(*) as c FROM manual_deposits WHERE status='pending'")
+    pending_deposits = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM support_tickets WHERE status='open'")
+    open_tickets = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM pending_api_orders WHERE status='pending'")
+    pending_api = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM products WHERE status='maintenance'")
+    maintenance_products = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE banned=1")
+    banned_users = cursor.fetchone()["c"]
+    cursor.execute("""SELECT p.name, COUNT(t.id) as sold FROM products p 
+                      LEFT JOIN transactions t ON t.product_name = p.name AND t.type='purchase' 
+                      GROUP BY p.id ORDER BY sold DESC LIMIT 1""")
+    top_product = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    text = "🔧 <b>ADMIN PANEL</b>\n━━━━━━━━━━━━━━━\n\n"
+    text += "Welcome back, Admin 👑\n\n"
+    text += "📊 <b>OVERVIEW</b>\n"
+    text += f"👥 Users: {total_users} | 📦 Orders: {total_orders}\n"
+    text += f"💰 Balance: ₹{total_balance} | 💵 Lifetime: ₹{lifetime_earnings}\n"
+    text += f"🆕 Today: {today_users} users | {today_orders} orders | ₹{today_revenue}\n"
+
+    if pending_deposits or open_tickets or pending_api:
+        text += "\n━━━━━━━━━━━━━━━\n\n⚠️ <b>ACTION REQUIRED</b>\n"
+        if pending_deposits:
+            text += f"💰 {pending_deposits} Pending Deposits\n"
+        if open_tickets:
+            text += f"🎫 {open_tickets} Open Tickets\n"
+        if pending_api:
+            text += f"⏳ {pending_api} Pending API Orders\n"
+
+    if maintenance_products or banned_users:
+        text += "\n━━━━━━━━━━━━━━━\n\n🚨 <b>ALERTS</b>\n"
+        if maintenance_products:
+            text += f"🔧 {maintenance_products} Products in Maintenance\n"
+        if banned_users:
+            text += f"🚫 {banned_users} Banned Users\n"
+
+    if top_product and top_product["sold"] > 0:
+        text += "\n━━━━━━━━━━━━━━━\n\n🏆 <b>TOP SELLING</b>\n"
+        text += f"🥇 {esc(top_product['name'])} — {top_product['sold']} sold\n"
+
+    text += "\n━━━━━━━━━━━━━━━"
+    return text
+    
+    # ============ SPIN HELPERS ============
+# BUG #5 FIX: single DB connection for all spin queries
+def get_spin_time_left(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT last_spin_at FROM users WHERE id=?", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not row or not row["last_spin_at"]:
+        return 0
+    try:
+        last_spin = datetime.strptime(row["last_spin_at"], '%Y-%m-%d %H:%M:%S')
+        elapsed = (utc_now() - last_spin).total_seconds()
+        remaining = SPIN_COOLDOWN_SECONDS - elapsed
+        return max(0, int(remaining))
+    except Exception:
+        return 0
+
+def format_time_remaining(seconds):
+    if seconds <= 0:
+        return "✅ Spin available hai!"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"⏰ {hours}h {minutes}m {secs}s baad spin milega"
+    elif minutes > 0:
+        return f"⏰ {minutes}m {secs}s baad spin milega"
+    else:
+        return f"⏰ {secs}s baad spin milega"
+
+# BUG #5 FIX: single connection, combined query
+def get_active_spin_reward(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    now_str = utc_now_str()
+    cursor.execute("SELECT id, amount, expires_at FROM spin_rewards WHERE user_id=? AND status='active' AND expires_at > ? ORDER BY id DESC LIMIT 1", (user_id, now_str))
+    reward = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return reward
+
+def get_spin_expiry_time(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    now_str = utc_now_str()
+    cursor.execute("SELECT expires_at FROM spin_rewards WHERE user_id=? AND status='active' AND expires_at > ? ORDER BY id DESC LIMIT 1", (user_id, now_str))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if row:
+        try:
+            dt_utc = datetime.strptime(row["expires_at"], '%Y-%m-%d %H:%M:%S')
+            dt_ist = dt_utc + timedelta(hours=5, minutes=30)
+            return dt_ist.strftime('%I:%M %p')
+        except Exception:
+            pass
+    return "N/A"
+
+# ============ FAQ ============
+def show_faq_menu(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, question FROM faq ORDER BY display_order ASC, id ASC")
+    faqs = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not faqs:
+        safe_navigate(call, "❓ FAQ\n\nAbhi koi FAQ nahi hai.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger")))
+        return
+    text = "❓ <b>FAQ — FREQUENTLY ASKED QUESTIONS</b>\n━━━━━━━━━━━━━━━\n\nNeeche question pe click karo:\n"
+    markup = InlineKeyboardMarkup(row_width=1)
+    for f in faqs:
+        q = f['question'][:58] if len(f['question']) > 58 else f['question']
+        markup.add(InlineKeyboardButton(f"❓ {q}", callback_data=f"faq_show_{f['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("📞 Still need help?", callback_data="support", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_faq_answer(call, faq_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT question, answer FROM faq WHERE id=?", (faq_id,))
+    f = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not f:
+        bot.answer_callback_query(call.id, "❌ Not found", show_alert=True)
+        return
+    text = f"❓ <b>{esc(f['question'])}</b>\n━━━━━━━━━━━━━━━\n\n{esc(f['answer'])}"
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("◀️ Back to FAQ", callback_data="faq_menu", style="primary"))
+    markup.add(InlineKeyboardButton("📞 Support", callback_data="support", style="success"))
+    safe_navigate(call, text, markup)
+
+# ============ CSV EXPORT ============
+def csv_export(call, export_type):
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        if export_type == "users":
+            cursor.execute("SELECT id, username, balance, banned, verified, phone_number, total_orders, total_spent, is_reseller, joined_at FROM users")
+            writer.writerow(["ID", "Username", "Balance", "Banned", "Verified", "Phone", "Orders", "Spent", "Reseller", "Joined"])
+            for r in cursor.fetchall():
+                writer.writerow([r["id"], r["username"], r["balance"], r["banned"], r["verified"], r["phone_number"], r["total_orders"], r["total_spent"], r["is_reseller"], r["joined_at"]])
+        elif export_type == "transactions":
+            cursor.execute("SELECT id, user_id, amount, type, details, license_key, product_name, duration, created_at FROM transactions ORDER BY id DESC")
+            writer.writerow(["ID", "User ID", "Amount", "Type", "Details", "Key", "Product", "Duration", "Date"])
+            for r in cursor.fetchall():
+                writer.writerow([r["id"], r["user_id"], r["amount"], r["type"], r["details"], r["license_key"], r["product_name"], r["duration"], r["created_at"]])
+        elif export_type == "deposits":
+            cursor.execute("SELECT id, user_id, amount, utr, status, admin_reason, created_at FROM manual_deposits ORDER BY id DESC")
+            writer.writerow(["ID", "User ID", "Amount", "UTR", "Status", "Reason", "Date"])
+            for r in cursor.fetchall():
+                writer.writerow([r["id"], r["user_id"], r["amount"], r["utr"], r["status"], r["admin_reason"], r["created_at"]])
+        elif export_type == "orders":
+            cursor.execute("SELECT id, user_id, product_id, plan_id, amount, status, created_at FROM pending_api_orders ORDER BY id DESC")
+            writer.writerow(["ID", "User ID", "Product ID", "Plan ID", "Amount", "Status", "Date"])
+            for r in cursor.fetchall():
+                writer.writerow([r["id"], r["user_id"], r["product_id"], r["plan_id"], r["amount"], r["status"], r["created_at"]])
+        cursor.close()
+        conn.close()
+        data = output.getvalue().encode('utf-8')
+        filename = f"{export_type}_{utc_now().strftime('%Y%m%d_%H%M%S')}.csv"
+        buf = io.BytesIO(data)
+        buf.name = filename
+        bot.send_document(call.message.chat.id, buf, caption=f"📁 <b>{export_type.upper()} EXPORT</b>\n\n✅ {filename}", parse_mode="HTML")
+        log_admin_action(call.from_user.id, "CSV Export", export_type)
+        bot.answer_callback_query(call.id, "✅ Exported!", show_alert=True)
+    except Exception as e:
+        logger.error(f"csv_export error: {e}")
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+
+# ============ ADMIN LOGS VIEW ============
+def show_admin_logs(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM admin_logs ORDER BY id DESC LIMIT 20")
+    logs = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not logs:
+        safe_navigate(call, "📝 <b>ADMIN LOGS</b>\n━━━━━━━━━━━━━━━\n\nAbhi tak koi activity nahi.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_settings", style="danger")))
+        return
+    text = "📝 <b>ADMIN LOGS (last 20)</b>\n━━━━━━━━━━━━━━━\n\n"
+    for l in logs:
+        entry = f"🕐 {l['created_at'][:16]}\n👤 Admin: <code>{l['admin_id']}</code>\n📌 {esc(l['action'])}\n"
+        if l["details"]:
+            entry += f"💬 {esc(l['details'])}\n"
+        entry += "\n━━━━━━━━━━━━━━━\n"
+        if len(text) + len(entry) > 3800:
+            break
+        text += entry
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_settings", style="danger"))
+    safe_navigate(call, text, markup)
+
+# ============ START ============
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    uid = message.from_user.id
+    username = message.from_user.username
+    referred_by = None
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].startswith("ref_"):
+        try:
+            ref_id = int(parts[1].replace("ref_", ""))
+            if ref_id != uid:
+                referred_by = ref_id
+        except Exception:
+            pass
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (id, username, balance, banned, verified, referred_by) VALUES (?,?,0,0,0,?)", (uid, username, referred_by))
+    if username:
+        cursor.execute("UPDATE users SET username=? WHERE id=?", (username, uid))
+    if referred_by:
+        cursor.execute("UPDATE users SET referred_by=? WHERE id=? AND referred_by IS NULL", (referred_by, uid))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    if referred_by:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE id=?", (referred_by,))
+        if cursor.fetchone():
+            safe_send(referred_by, f"🎉 New referral joined!\n\n👤 {uid}\n\nUnki pehli purchase pe tumhe reward milega!")
+        cursor.close()
+        conn.close()
+    update_last_active(uid)
+    if is_bot_maintenance() and uid not in get_admin_ids():
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary"))
+        safe_send(message.chat.id, "🔧 <b>BOT UNDER MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\n⚠️ Bot abhi maintenance mein hai.\n\nJald hi wapas aa jayega!\n\n━━━━━━━━━━━━━━━\n\n⏳ Thodi der baad try karo.", markup)
+        return
+    if is_verified(uid):
+        safe_send(message.chat.id, get_welcome_text(uid), get_main_menu(uid))
+    else:
+        send_verification_request(message.chat.id)
+
+def send_verification_request(chat_id):
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("📱 Share My Number", request_contact=True))
+    safe_send(chat_id, "👋 Welcome!\n\nPlease share your phone number.", markup)
+
+# BUG #35 FIX: contact user_id None safe + only own contact
+@bot.message_handler(content_types=['contact'])
+def handle_contact(message):
+    user_id = message.from_user.id
+    if message.contact and message.contact.user_id == user_id:
+        set_verified(user_id, message.contact.phone_number)
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("/start"))
+        safe_send(message.chat.id, "✅ Verified!", markup)
+        if is_bot_maintenance() and user_id not in get_admin_ids():
+            m = InlineKeyboardMarkup(row_width=1)
+            m.add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary"))
+            safe_send(message.chat.id, "🔧 <b>BOT UNDER MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\n⚠️ Bot abhi maintenance mein hai.\n\nJald hi wapas aa jayega!\n\n━━━━━━━━━━━━━━━", m)
+            return
+        safe_send(message.chat.id, get_welcome_text(user_id), get_main_menu(user_id))
+    else:
+        # BUG #35 FIX: not own contact — send verification again
+        send_verification_request(message.chat.id)
+
+# ============ MAIN MENU FUNCTIONS ============
+def show_profile(call, user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id=?", (user_id,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not user:
+        return
+    try:
+        first_name = bot.get_chat(user_id).first_name or "N/A"
+    except Exception:
+        first_name = "N/A"
+    account_type = "🤝 Reseller" if user["is_reseller"] else "👤 Regular"
+    status = "✅ Active" if not user["banned"] else "🚫 Banned"
+    text = f"""👤 ━━ YOUR PROFILE ━━ 👤
+
+🆔 User ID: <code>{user_id}</code>
+📛 Name: {esc(first_name)}
+📱 Phone: {esc(user['phone_number'] or 'N/A')}
+👑 Account: {account_type} | {status}
+
+💰 ━ Balance ━
+   💳 Current: ₹{user['balance'] or 0}
+
+📊 ━ Statistics ━
+   📦 Orders: {user['total_orders'] or 0}
+   💸 Spent: ₹{user['total_spent'] or 0}
+   👥 Referrals: {user['total_referrals'] or 0}
+   🎁 Referral Earnings: ₹{user['referral_earnings'] or 0}
+
+📅 Joined: {user['joined_at'][:10] if user['joined_at'] else 'N/A'}"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("💰 Add Balance", callback_data="add_balance", style="success"), InlineKeyboardButton("📜 History", callback_data="history", style="primary"))
+    if not user["is_reseller"]:
+        markup.add(InlineKeyboardButton("🤝 Upgrade to Reseller", callback_data="reseller_info", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_products(call):
+    user_id = call.from_user.id
+    display_name = get_user_display_name(user_id)
+    text = f"""🛒 <b>SELECT YOUR DEVICE TYPE</b> ✨
+━━━━━━━━━━━━━━━━━━━━━
+
+👋 Yoo {esc(display_name)}!
+Pehle apna device type chunein, uske baad products dikhenge.
+
+━━━━━━━━━━━━━━━━━━━━━
+
+⭐ <b>DEVICE TYPE</b> ⭐
+
+🤖 <b>ROOT PANEL</b>
+└─ Android Root Users ke liye
+
+📱 <b>NON-ROOT PANEL</b>
+└─ Android Non-Root Users ke liye
+
+🍎 <b>IPHONE PANEL</b>
+└─ iPhone Users ke liye
+
+━━━━━━━━━━━━━━━━━━━━━
+
+⚡ Instant Delivery | 🔒 100% Secure | 💰 Best Prices
+
+━━━━━━━━━━━━━━━━━━━━━
+
+👇 Apna panel select karo!"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("🤖 Android Root Panel", callback_data="category_root", style="primary"))
+    markup.add(InlineKeyboardButton("📱 Android Non Root Panel", callback_data="category_nonroot", style="primary"))
+    markup.add(InlineKeyboardButton("🍎 iPhone", callback_data="category_iphone", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_products_by_category(call, category):
+    user_id = call.from_user.id
+    display_name = get_user_display_name(user_id)
+    cat_name = get_category_name(category)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, status FROM products WHERE category=?", (category,))
+    products = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not products:
+        text = f"""━━━ <b>{cat_name} PANEL</b> ━━━
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📦 Available Products:
+
+━━━━━━━━━━━━━━━━━━━━━
+
+😔 Koi product nahi mila!
+
+⚠️ Is category me abhi koi product available nahi hai.
+Jald hi add kiya jayega!
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🔥 Naye products jald aa rahe hain!
+🔔 Notify Me dabao — product add hote hi notification pao!
+
+━━━━━━━━━━━━━━━━━━━━━"""
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("🔔 Notify Me", callback_data=f"notify_category_{category}", style="primary"))
+        markup.add(InlineKeyboardButton("◀️ Back", callback_data="shop_now", style="danger"))
+        safe_navigate(call, text, markup)
+        return
+    text = f"""{cat_name} — SELECT A PRODUCT
+━━━━━━━━━━━━━━━━━━━━━
+
+👋 Yoo {esc(display_name)}!
+Choose any product below to view its price and available duration plans.
+
+━━━━━━━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    for p in products:
+        if p["status"] == "maintenance":
+            markup.add(InlineKeyboardButton(f"🔧 {p['name']} (Maintenance)", callback_data=f"product_{p['id']}", style="danger"))
+        else:
+            markup.add(InlineKeyboardButton(f"{p['name']}", callback_data=f"product_{p['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="shop_now", style="danger"))
+    safe_navigate(call, text, markup)
+
+def notify_category(call, category):
+    user_id = call.from_user.id
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO category_notifications (user_id, category, notified) VALUES (?,?,0)", (user_id, category))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    bot.answer_callback_query(call.id, "🔔 Notify kar diya! Product add hote hi notification milega!", show_alert=True)
+
+def show_product_plans(call, product_id, reseller_mode=False):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, name, category FROM products WHERE id=?", (product_id,))
+    ps = cursor.fetchone()
+    if ps and ps["status"] == 'maintenance':
+        cursor.close()
+        conn.close()
+        safe_navigate(call, f"🔧 UNDER MAINTENANCE\n\n{esc(ps['name'])}\n\n⚠️ Yeh product abhi maintenance pe hai.", InlineKeyboardMarkup().add(InlineKeyboardButton("🔔 Notify Me", callback_data=f"notify_{product_id}", style="primary"), InlineKeyboardButton("◀️ Back", callback_data=f"category_{ps['category']}", style="danger")))
+        return
+    cursor.execute("SELECT id, duration, price, reseller_price FROM plans WHERE product_id=?", (product_id,))
+    plans = cursor.fetchall()
+    cursor.execute("SELECT name, features, demo_video, download_link, category FROM products WHERE id=?", (product_id,))
+    product = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not product:
+        bot.answer_callback_query(call.id, "❌ Product not found", show_alert=True)
+        return
+    cat_info = {"root": "Available | Root Only", "nonroot": "Available | Non Root Only", "iphone": "Available | iPhone Only"}
+    availability = cat_info.get(product["category"], "Available | All Devices")
+    text = f"<b>{esc(product['name'])}</b>\n{availability}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+    if product["features"]:
+        text += f"<blockquote>{esc(product['features'])}</blockquote>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━\n<b>Select Duration:</b>"
+    markup = InlineKeyboardMarkup(row_width=1)
+    for pl in plans:
+        dtext = pl["duration"]
+        # BUG #21 FIX: reseller price NULL — show normal + tag it's not reseller
+        if reseller_mode and pl["reseller_price"] is not None:
+            markup.add(InlineKeyboardButton(f"⭐ {dtext} | ₹{pl['reseller_price']}", callback_data=f"buy_{product_id}_{pl['id']}", style="success"))
+        elif reseller_mode and pl["reseller_price"] is None:
+            markup.add(InlineKeyboardButton(f"⏰ {dtext} | ₹{pl['price']} (no reseller price)", callback_data=f"buy_{product_id}_{pl['id']}", style="success"))
+        else:
+            markup.add(InlineKeyboardButton(f"⏰ {dtext} | ₹{pl['price']}", callback_data=f"buy_{product_id}_{pl['id']}", style="success"))
+    if product["demo_video"]:
+        markup.add(InlineKeyboardButton("📺 Demo Video", callback_data=f"demo_{product_id}", style="primary"))
+    if product["download_link"]:
+        markup.add(InlineKeyboardButton("📥 Download Files", url=product["download_link"], style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data=f"category_{product['category']}", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_demo_video(call, product_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, demo_video FROM products WHERE id=?", (product_id,))
+    product = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not product or not product["demo_video"]:
+        bot.answer_callback_query(call.id, "❌ No demo video", show_alert=True)
+        return
+    demo = product["demo_video"].strip()
+    try:
+        if "t.me/c/" in demo:
+            parts = demo.replace("https://t.me/c/", "").split("/")
+            chat_id = f"-100{parts[0]}"
+            message_id = int(parts[1])
+        else:
+            parts = demo.replace("https://t.me/", "").split("/")
+            chat_id = f"@{parts[0]}"
+            message_id = int(parts[1])
+        bot.forward_message(call.message.chat.id, chat_id, message_id)
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("🛒 BUY NOW", callback_data=f"product_{product_id}", style="success"), InlineKeyboardButton("◀️ BACK", callback_data=f"product_{product_id}", style="danger"))
+        bot.send_message(call.message.chat.id, f"<b>{esc(product['name'])}</b>\n\n🔥 Dekho aur purchase karo!", parse_mode="HTML", reply_markup=markup)
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        logger.error(f"demo video error: {e}")
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+
+# BUG #7 FIX: DB connection closed on all paths
+def show_order_confirmation(call, product_id, plan_id):
+    user_id = call.from_user.id
+    if is_bot_maintenance() and user_id not in get_admin_ids():
+        bot.answer_callback_query(call.id, "🔧 Bot maintenance mein hai!", show_alert=True)
+        safe_navigate(call, "🔧 <b>BOT UNDER MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\n⚠️ Bot abhi maintenance mein hai.\n\nKoi bhi purchase abhi nahi ho sakti.\n\n━━━━━━━━━━━━━━━", InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary")))
+        return
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT balance FROM users WHERE id=?", (user_id,))
+        user = cursor.fetchone()
+        cursor.execute("SELECT duration, price, reseller_price FROM plans WHERE id=?", (plan_id,))
+        plan = cursor.fetchone()
+        cursor.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        product = cursor.fetchone()
+        if not plan or not product or not user:
+            bot.answer_callback_query(call.id, "❌ Invalid", show_alert=True)
+            return
+        price = plan["reseller_price"] if is_reseller(user_id) and plan["reseller_price"] is not None else plan["price"]
+        cursor.execute("SELECT id, discount_percent FROM coupons WHERE user_id=? AND used=0 ORDER BY id DESC LIMIT 1", (user_id,))
+        coupon = cursor.fetchone()
+        # BUG #5 FIX: single query already handled by get_active_spin_reward
+        spin_reward = get_active_spin_reward(user_id)
+    finally:
+        cursor.close()
+        conn.close()
+    dtext = plan["duration"]
+    total_discount = 0
+    discount_text = ""
+    if coupon:
+        discount = math.ceil(price * coupon["discount_percent"] / 100)
+        total_discount += discount
+        discount_text += f"\n🎁 Coupon: {coupon['discount_percent']}% OFF (-₹{discount})"
+    if spin_reward:
+        spin_discount = spin_reward["amount"]
+        total_discount += spin_discount
+        expiry = get_spin_expiry_time(user_id)
+        discount_text += f"\n🎰 Cash Spin Reward: -₹{spin_discount} (⏰ {expiry} tak valid)"
+    final_price = max(0, price - total_discount)
+    text = f"🛒 <b>ORDER CONFIRMATION</b>\n\n{esc(product['name'])}\n⏰ {esc(dtext)}\n\n💰 Original: ₹{price}{discount_text}\n\n✅ Final: ₹{final_price}\n\n💵 Balance: ₹{user['balance'] if user else 0}"
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("✅ Confirm", callback_data=f"confirm_{product_id}_{plan_id}", style="success"), InlineKeyboardButton("❌ Cancel", callback_data=f"product_{product_id}", style="danger"))
+    safe_navigate(call, text, markup)
+
+# BUG #1, #28 FIX: balance locked first, then API call, on fail refund
+# BUG #43 FIX: re-validate product/plan at purchase time
+def process_purchase(call, product_id, plan_id):
+    user_id = call.from_user.id
+    if is_bot_maintenance() and user_id not in get_admin_ids():
+        bot.answer_callback_query(call.id, "🔧 Bot maintenance mein hai! Purchase abhi band hai.", show_alert=True)
+        safe_navigate(call, "🔧 <b>BOT UNDER MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\n⚠️ Bot abhi maintenance mein hai.\n\nKoi bhi purchase abhi nahi ho sakti.\n\n━━━━━━━━━━━━━━━", InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary")))
+        return
+
+    # ===== PHASE 1: fetch + validate =====
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT balance FROM users WHERE id=?", (user_id,))
+        user = cursor.fetchone()
+        cursor.execute("SELECT duration, price, reseller_price FROM plans WHERE id=?", (plan_id,))
+        plan = cursor.fetchone()
+        cursor.execute("SELECT name, api_pid, download_link, demo_video FROM products WHERE id=?", (product_id,))
+        product = cursor.fetchone()
+        if not plan or not product or not user:
+            bot.answer_callback_query(call.id, "❌ Invalid or product no longer available", show_alert=True)
+            return
+        price = plan["reseller_price"] if is_reseller(user_id) and plan["reseller_price"] is not None else plan["price"]
+        cursor.execute("SELECT id, discount_percent FROM coupons WHERE user_id=? AND used=0 ORDER BY id DESC LIMIT 1", (user_id,))
+        coupon = cursor.fetchone()
+        spin_reward = None if is_reseller(user_id) else get_active_spin_reward(user_id)
+        total_discount = 0
+        spin_reward_id = None
+        coupon_id = None
+        if coupon:
+            discount = math.ceil(price * coupon["discount_percent"] / 100)
+            total_discount += discount
+            coupon_id = coupon["id"]
+        if spin_reward:
+            total_discount += spin_reward["amount"]
+            spin_reward_id = spin_reward["id"]
+        final_price = max(0, price - total_discount)
+        if user["balance"] < final_price:
+            bot.answer_callback_query(call.id, f"❌ Need ₹{final_price}", show_alert=True)
+            return
+        if not product["api_pid"]:
+            bot.answer_callback_query(call.id, "❌ Product not configured", show_alert=True)
+            safe_send(
+                call.message.chat.id,
+                f"❌ <b>PRODUCT NOT CONFIGURED</b>\n\n"
+                f"{esc(product['name'])}\n\n"
+                f"⚠️ Admin ne is product ka API PID set nahi kiya.\n\n"
+                f"✅ <b>Aapka balance safe hai — koi paisa nahi kata.</b>\n\n"
+                f"📞 Support se contact karo ya baad mein try karo.",
+                InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("📞 Support", callback_data="support", style="success"),
+                    InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger")
+                )
+            )
+            return
+    finally:
+        cursor.close()
+        conn.close()
+
+    # ===== PHASE 2: LOCK balance + reserve coupon/spin =====
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        # lock balance
+        cursor.execute("UPDATE users SET balance = balance - ? WHERE id=? AND balance >= ?", (final_price, user_id, final_price))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            bot.answer_callback_query(call.id, "❌ Balance changed", show_alert=True)
+            return
+        if coupon_id:
+            cursor.execute("UPDATE coupons SET used=2 WHERE id=? AND used=0", (coupon_id,))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                # refund the deducted balance
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE id=?", (final_price, user_id))
+                conn.commit()
+                bot.answer_callback_query(call.id, "❌ Coupon already used", show_alert=True)
+                return
+        if spin_reward_id:
+            cursor.execute("UPDATE spin_rewards SET status='reserved' WHERE id=? AND status='active'", (spin_reward_id,))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE id=?", (final_price, user_id))
+                if coupon_id:
+                    cursor.execute("UPDATE coupons SET used=0 WHERE id=? AND used=2", (coupon_id,))
+                conn.commit()
+                bot.answer_callback_query(call.id, "❌ Spin reward expired", show_alert=True)
+                return
+        # create pending order entry (so we can recover on failure)
+        cursor.execute("INSERT INTO pending_api_orders (user_id, product_id, plan_id, amount, coupon_id, spin_reward_id, status, retry_count) VALUES (?,?,?,?,?,?,?,0)",
+                       (user_id, product_id, plan_id, final_price, coupon_id, spin_reward_id, 'processing'))
+        order_row_id = cursor.lastrowid
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"process_purchase phase2 error: {e}")
+        cursor.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+        return
+    finally:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+
+    # ===== PHASE 3: API call OUTSIDE transaction =====
+    duration_str = plan["duration"]
+    api_response = None
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fetch_key_from_api, product["api_pid"], duration_str)
+            api_response = future.result(timeout=30)
+    except concurrent.futures.TimeoutError:
+        api_response = "error: API timeout"
+    except Exception as e:
+        logger.error(f"API thread error: {e}")
+        api_response = f"error: {e}"
+
+    license_key, error_msg = parse_api_response(api_response)
+
+    # ===== PHASE 4a: SUCCESS — deliver =====
+    if license_key:
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute("UPDATE users SET total_orders=total_orders+1, total_spent=total_spent+? WHERE id=?", (final_price, user_id))
+            cursor.execute("INSERT INTO transactions (user_id, amount, type, details, license_key, product_name, duration) VALUES (?,?,'purchase','api',?,?,?)", (user_id, final_price, license_key, product["name"], duration_str))
+            cursor.execute("INSERT OR IGNORE INTO review_reminders (user_id, product_id, last_reminder_at, reminder_count) VALUES (?,?,?,0)", (user_id, product_id, utc_now_str()))
+            if coupon_id:
+                cursor.execute("UPDATE coupons SET used=1 WHERE id=?", (coupon_id,))
+            if spin_reward_id:
+                cursor.execute("UPDATE spin_rewards SET status='used' WHERE id=?", (spin_reward_id,))
+            cursor.execute("SELECT referred_by, total_orders FROM users WHERE id=?", (user_id,))
+            ref = cursor.fetchone()
+            if ref and ref["referred_by"] and ref["total_orders"] == 1:
+                reward = min(math.ceil(final_price * 5 / 100), 100)
+                cursor.execute("UPDATE users SET balance = balance + ?, referral_earnings = referral_earnings + ?, total_referrals = total_referrals + 1 WHERE id=?", (reward, reward, ref["referred_by"]))
+                ref_id = ref["referred_by"]
+            else:
+                ref_id = None
+            cursor.execute("DELETE FROM pending_api_orders WHERE id=?", (order_row_id,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"purchase success commit error: {e}")
+            cursor.close()
+            conn.close()
+            safe_send(call.message.chat.id, "⚠️ Order complete nahi ho paya. Balance refund kiya jayega. Support se contact karo.")
+            return
+        cursor.close()
+        conn.close()
+        if ref_id:
+            safe_send(ref_id, f"🎁 Referral Reward!\n\n💰 ₹{reward}")
+        caption = f"""✅ <b>PURCHASE SUCCESSFUL!</b>
+
+<b>{esc(product['name'])}</b>
+⏰ <b>{esc(duration_str)}</b>
+💰 <b>₹{final_price}</b>
+
+🔑 <b>YOUR KEY</b>
+<code>{esc(license_key)}</code>
+
+⚠️ Key pe click karo—copy ho jayegi!"""
+        markup = InlineKeyboardMarkup(row_width=1)
+        if product["download_link"]:
+            markup.add(InlineKeyboardButton("📥 Download Files", url=product["download_link"], style="primary"))
+        if product["demo_video"]:
+            markup.add(InlineKeyboardButton("📺 Demo Video", url=product["demo_video"], style="primary"))
+        markup.add(InlineKeyboardButton("⭐ Rate", callback_data=f"review_{product_id}_5", style="success"))
+        markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+        try:
+            bot.send_photo(call.message.chat.id, SUCCESS_IMG, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            safe_send(call.message.chat.id, caption, markup)
+        return
+
+    # ===== PHASE 4b: FAIL — refund + revert coupon/spin =====
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        # refund balance
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE id=?", (final_price, user_id))
+        # revert coupon
+        if coupon_id:
+            cursor.execute("UPDATE coupons SET used=0 WHERE id=? AND used=2", (coupon_id,))
+        # revert spin reward
+        if spin_reward_id:
+            cursor.execute("UPDATE spin_rewards SET status='active' WHERE id=? AND status='reserved'", (spin_reward_id,))
+        # BUG #2 FIX: keep order row as 'pending' with retry so worker can retry later
+        cursor.execute("UPDATE pending_api_orders SET status='pending', retry_count=retry_count+1 WHERE id=?", (order_row_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"purchase fail refund error: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+    bot.answer_callback_query(call.id, f"❌ {error_msg}", show_alert=True)
+    safe_send(call.message.chat.id, f"❌ <b>OUT OF STOCK</b>\n\n{esc(product['name'])}\n\n⚠️ {esc(error_msg)}\n\n✅ <b>Aapka balance safe hai — koi paisa nahi kata.</b>\n\n🔔 Jab stock wapas aayega, aapko notify kiya jayega.", InlineKeyboardMarkup().add(InlineKeyboardButton("🔔 Notify Me", callback_data=f"notify_{product_id}", style="primary"), InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger")))
+
+# BUG #30 FIX: INSERT OR IGNORE — unique constraint prevents dupes
+def notify_me(call, product_id):
+    user_id = call.from_user.id
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO maintenance_notifications (user_id, product_id, notified) VALUES (?,?,0)", (user_id, product_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    bot.answer_callback_query(call.id, "🔔 Notified!", show_alert=True)
+
+# BUG #18 FIX: escape license_key in code block
+def show_history(call, user_id, page=0):
+    PER_PAGE = 5
+    offset = page * PER_PAGE
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""SELECT license_key, product_name, duration, amount, created_at FROM transactions WHERE user_id=? AND type='purchase' AND license_key IS NOT NULL AND license_key != '' ORDER BY id DESC LIMIT ? OFFSET ?""", (user_id, PER_PAGE, offset))
+    rows = cursor.fetchall()
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE user_id=? AND type='purchase' AND license_key IS NOT NULL AND license_key != ''", (user_id,))
+    total = cursor.fetchone()["c"]
+    cursor.close()
+    conn.close()
+    if not rows and page == 0:
+        text = """🛍️ ━━ MY ORDERS ━━ 🛍️
+
+━━━━━━━━━━━━━━━
+
+🚫 No orders yet!
+
+🛒 Start shopping to see your orders here!
+💎 All your keys will be saved here
+
+━━━━━━━━━━━━━━━"""
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("🛒 Shop Key", callback_data="shop_now", style="danger"), InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+        safe_navigate(call, text, markup)
+        return
+    total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+    text = f"🛍️ ━━ MY ORDERS ━━ 🛍️\n📄 Page {page + 1}/{total_pages}\n\n━━━━━━━━━━━━━━━\n\n"
+    for r in rows:
+        text += f"📦 {esc(r['product_name'])}\n⏰ {esc(r['duration'])}\n💰 ₹{r['amount']}\n🔑 <code>{esc(r['license_key'])}</code>\n📅 {r['created_at'][:16]}\n\n━━━━━━━━━━━━━━━\n\n"
+    markup = InlineKeyboardMarkup(row_width=3)
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"history_page_{page - 1}", style="primary"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"history_page_{page + 1}", style="primary"))
+    if nav_buttons:
+        markup.add(*nav_buttons)
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_add_balance_menu(call):
+    text = """💰 <b>ADD BALANCE</b>
+━━━━━━━━━━━━━━━
+
+💳 Manual Deposit → Admin Verification Required
+⚡ Fam Pay → Auto Detect 5 Min
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("📱 Manual Deposit", callback_data="manual_deposit", style="success"))
+    markup.add(InlineKeyboardButton("⚡ Fam Pay (Instant Credit)", callback_data="auto_pay", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_keypad(call, user_id, amount):
+    min_deposit = get_setting("min_deposit", 500)
+    is_new = is_new_user(user_id)
+    markup = InlineKeyboardMarkup(row_width=3)
+    markup.add(InlineKeyboardButton("1", callback_data="pad_1", style="primary"), InlineKeyboardButton("2", callback_data="pad_2", style="primary"), InlineKeyboardButton("3", callback_data="pad_3", style="primary"))
+    markup.add(InlineKeyboardButton("4", callback_data="pad_4", style="primary"), InlineKeyboardButton("5", callback_data="pad_5", style="primary"), InlineKeyboardButton("6", callback_data="pad_6", style="primary"))
+    markup.add(InlineKeyboardButton("7", callback_data="pad_7", style="primary"), InlineKeyboardButton("8", callback_data="pad_8", style="primary"), InlineKeyboardButton("9", callback_data="pad_9", style="primary"))
+    markup.add(InlineKeyboardButton("⌫", callback_data="pad_backspace", style="danger"), InlineKeyboardButton("0", callback_data="pad_0", style="primary"), InlineKeyboardButton("✅", callback_data="pad_enter", style="success"))
+    markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_main", style="danger"))
+    text = f"💰 <b>ADD BALANCE</b>\n\n━━━━━━━━━━━━━━━\n\n💳 Enter Amount:\n\n₹ {amount if amount else '0'}\n\n━━━━━━━━━━━━━━━"
+    if is_new:
+        text += f"\n\n⚠️ New user? Pehli baar ₹{min_deposit} minimum\n   deposit karna padega.\n\n❌ ₹{min_deposit} se kam raha toh payment\n   cancel ho jayega.\n\n━━━━━━━━━━━━━━━"
+    safe_navigate(call, text, markup)
+
+def handle_keypad(call, data, user_id):
+    state = get_user_state(user_id)
+    amount = state.get("keypad_amount", "")
+    if data == "pad_backspace":
+        amount = amount[:-1]
+    elif data == "pad_enter":
+        if amount:
+            try:
+                amt = int(amount)
+            except ValueError:
+                pop_user_state(user_id)
+                bot.answer_callback_query(call.id, "❌ Invalid amount", show_alert=True)
+                return
+            min_deposit = get_setting("min_deposit", 500)
+            if is_new_user(user_id) and amt < min_deposit:
+                bot.answer_callback_query(call.id, f"❌ Minimum ₹{min_deposit} required!", show_alert=True)
+                return
+            generate_qr(call, amt, user_id)
+            return
+    else:
+        digit = data.replace("pad_", "")
+        if digit.isdigit():
+            amount += digit
+    set_user_state(user_id, {"keypad_amount": amount})
+    show_keypad(call, user_id, amount)
+
+# BUG #8 FIX: don't leave orphan pending_payments if QR send fails
+def generate_qr(call, amount, user_id):
+    qr_api = f"{FAMPAY_QR_URL}?upi={FAMPAY_UPI_ID}&amount={amount}"
+    try:
+        req = urllib.request.Request(qr_api, headers={'User-Agent': 'Mozilla/5.0'})
+        raw = urllib.request.urlopen(req, timeout=20).read().decode()
+        res = json.loads(raw)
+        if str(res.get("status", "")).lower() != "success":
+            raise ValueError("QR API failed")
+        data = res.get("data", {})
+        qr_url = data.get("qr_url")
+        order_id = data.get("order_id")
+        if not qr_url or not order_id:
+            raise ValueError("Missing qr_url or order_id")
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO pending_payments (user_id, order_id, amount, status, created_at) VALUES (?,?,?,'pending',?)", (user_id, order_id, amount, epoch_now()))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        caption = (
+            f"🛒 <b>FAM PAY — ₹{amount}</b>\n\n"
+            f"💰 Amount: ₹{amount}\n"
+            f"🆔 Order: <code>{order_id}</code>\n\n"
+            f"Payment kar do — balance automatic add ho jaayega.\n\n"
+            f"Max 10 minutes mein credit hoga."
+        )
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_qr_{order_id}", style="danger"))
+        try:
+            bot.send_photo(call.message.chat.id, qr_url, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception as e:
+            # BUG #8 FIX: mark pending payment cancelled if QR send fails
+            logger.error(f"generate_qr send_photo failed: {e}")
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE pending_payments SET status='cancelled' WHERE order_id=? AND status='pending'", (order_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            safe_send(call.message.chat.id, "❌ QR generate hua par bhej nahi paye. Dobara try karo.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="add_balance", style="danger")))
+    except Exception as e:
+        logger.error(f"generate_qr error: {e}")
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+    finally:
+        pop_user_state(user_id)
+
+def show_manual_deposit(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT qr_code_file_id FROM settings WHERE id=1")
+    setting = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    qr_file_id = setting["qr_code_file_id"] if setting else None
+    manual_upi = get_setting("manual_upi", "")
+    min_deposit = get_setting("min_deposit", 500)
+    is_new = is_new_user(call.from_user.id)
+    text = f"📱 <b>MANUAL DEPOSIT</b>\n\n━━━━━━━━━━━━━━━\n\nUPI: <code>{esc(manual_upi)}</code>\n\n━━━━━━━━━━━━━━━\n\n1. QR scan karo ya UPI pe pay karo\n2. Screenshot lo\n3. UTR copy karo\n\n━━━━━━━━━━━━━━━"
+    if is_new:
+        text += f"\n\n⚠️ New user? Pehli baar ₹{min_deposit} minimum\n   deposit karna padega.\n\n━━━━━━━━━━━━━━━"
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("📸 SEND PROOF", callback_data="manual_proof", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="add_balance", style="danger"))
+    if qr_file_id:
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        try:
+            bot.send_photo(call.message.chat.id, qr_file_id, caption=text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            safe_send(call.message.chat.id, text, markup)
+    else:
+        safe_navigate(call, text, markup)
+
+def show_reseller_info(call):
+    fee = get_setting("reseller_fee", 399)
+    min_balance = get_setting("reseller_min_balance", 2000)
+    text = f"""🤝 <b>RESELLER PLAN</b>
+
+━━━━━━━━━━━━━━━
+
+💰 Minimum Balance: ₹{min_balance}
+💸 Activation Fee: Sirf ₹{fee}
+
+━━━━━━━━━━━━━━━
+
+⚡ Kaise kaam karta hai?
+
+₹{min_balance} deposit karo — sirf ₹{fee} katega!
+Baaki wallet mein safe rahega
+jisse koi bhi product khareed sakte ho!
+
+━━━━━━━━━━━━━━━
+
+✅ Reseller Benefits:
+
+✅ Hamare sabhi products bahut saste price pe milenge!
+✅ Jitna margin rakho utna profit
+✅ Unlimited earning opportunity
+✅ Special Reseller Tag milega
+
+━━━━━━━━━━━━━━━
+
+🔥 Aap becho aur karo mast profit!
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton(f"✅ JOIN NOW - ₹{fee}", callback_data="join_reseller", style="success"), InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+# BUG #11 FIX: notify_admins failure is logged (not silent)
+# BUG #36 FIX: cursor+conn close on every return path
+def join_reseller(call):
+    user_id = call.from_user.id
+    fee = get_setting("reseller_fee", 399)
+    min_balance = get_setting("reseller_min_balance", 2000)
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT balance, is_reseller FROM users WHERE id=?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return
+        if user["is_reseller"]:
+            bot.answer_callback_query(call.id, "Already reseller!", show_alert=True)
+            return
+        if user["balance"] < min_balance:
+            safe_navigate(call, f"❌ Minimum ₹{min_balance} balance chahiye.\n\nAapka balance: ₹{user['balance']}", InlineKeyboardMarkup().add(InlineKeyboardButton("💰 Add Balance", callback_data="add_balance", style="success"), InlineKeyboardButton("◀️ Back", callback_data="reseller_info", style="danger")))
+            return
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute("UPDATE users SET balance = balance - ?, is_reseller=1 WHERE id=? AND balance >= ? AND is_reseller=0", (fee, user_id, min_balance))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                bot.answer_callback_query(call.id, "❌ Failed, try again", show_alert=True)
+                return
+            cursor.execute("INSERT INTO transactions (user_id, amount, type) VALUES (?,?,'reseller_fee')", (user_id, fee))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"join_reseller error: {e}")
+            bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+            return
+    finally:
+        cursor.close()
+        conn.close()
+    safe_navigate(call, "🎉 Reseller Active!\n\nAap ab reseller ban gaye hain! 🤝", InlineKeyboardMarkup().add(InlineKeyboardButton("🤝 Reseller Panel", callback_data="reseller_panel", style="success"), InlineKeyboardButton("◀️ Menu", callback_data="back_main", style="danger")))
+    # BUG #11 FIX: wrap admin notify, log failure
+    try:
+        notify_admins(f"🤝 New Reseller!\n\n👤 {user_id}\n💰 ₹{fee}")
+    except Exception as e:
+        logger.error(f"reseller admin notify failed: {e}")
+
+def show_lucky_spin(call):
+    user_id = call.from_user.id
+    if is_reseller(user_id):
+        safe_navigate(call, "❌ <b>Spin Sirf Regular Users Ke Liye</b>\n\nAap reseller hain — aapko already discounted prices milte hain.\n\nSpin se aapko extra discount nahi milega.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger")))
+        return
+    time_left = get_spin_time_left(user_id)
+    if time_left > 0:
+        wait_text = format_time_remaining(time_left)
+        text = f"""🎰 ━━ <b>CASH SPIN</b> ━━
+
+❌ Already Spun!
+
+{wait_text}
+
+━━━━━━━━━━━━━━━
+🍀 Har 24 ghante mein ek free spin!
+💰 Jeeto Cash Reward!
+
+━━━━━━━━━━━━━━━"""
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("🔄 Refresh", callback_data="lucky_spin", style="primary"))
+        markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+        safe_navigate(call, text, markup)
+        return
+    text = """🎰 ━━ <b>CASH SPIN</b> ━━
+
+🎁 Daily Free Spin!
+💰 Jeeto Cash Reward!
+🍀 Har 24 ghante mein ek free spin milega!
+━━━━━━━━━━━━━━━
+⏰ ✅ Spin available hai!
+
+👇 Spin karo aur luck try karo!"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🎮 Spin Karo (FREE)", callback_data="spin_now", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def do_spin(call):
+    user_id = call.from_user.id
+    if is_reseller(user_id):
+        bot.answer_callback_query(call.id, "❌ Spin sirf regular users ke liye hai.", show_alert=True)
+        return
+    time_left = get_spin_time_left(user_id)
+    if time_left > 0:
+        wait_text = format_time_remaining(time_left)
+        bot.answer_callback_query(call.id, f"❌ {wait_text}", show_alert=True)
+        return
+    if is_rate_limited(f"spin_{user_id}", 5, 60):
+        bot.answer_callback_query(call.id, "❌ Too many spin attempts. Please wait 1 minute.", show_alert=True)
+        return
+    reward_amount = random.randint(1, 3)
+    winning_emoji = random.choice(["💰", "💎", "⭐", "🎁", "🍀", "🔔"])
+    symbols = ["🍓", "🍒", "🔔", "⭐", "💎", "💰", "🎁", "🍀", "7️⃣", "🍋"]
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
+    def build_reel(start_idx, length):
+        reel = []
+        for i in range(length):
+            reel.append(symbols[(start_idx + i) % len(symbols)])
+        return reel
+    reel_len = 24
+    reel1 = build_reel(random.randint(0, 9), reel_len)
+    reel2 = build_reel(random.randint(0, 9), reel_len)
+    reel3 = build_reel(random.randint(0, 9), reel_len)
+    reel1[-3:] = [winning_emoji, winning_emoji, winning_emoji]
+    reel2[-3:] = [winning_emoji, winning_emoji, winning_emoji]
+    reel3[-3:] = [winning_emoji, winning_emoji, winning_emoji]
+    total_frames = reel_len - 3
+    delay_schedule = []
+    for i in range(total_frames):
+        progress = i / max(1, total_frames - 1)
+        delay = 0.05 + (0.55 * (progress ** 2))
+        delay_schedule.append(delay)
+    for i in range(total_frames):
+        idx1 = i
+        idx2 = min(i + 1, total_frames - 1)
+        idx3 = min(i + 2, total_frames - 1)
+        s1_top, s1_mid, s1_bot = reel1[idx1], reel1[idx1 + 1], reel1[idx1 + 2]
+        s2_top, s2_mid, s2_bot = reel2[idx2], reel2[idx2 + 1], reel2[idx2 + 2]
+        s3_top, s3_mid, s3_bot = reel3[idx3], reel3[idx3 + 1], reel3[idx3 + 2]
+        spin_text = (f"🎰 <b>CASH SPIN</b> 🎰\n━━━━━━━━━━━━━━━\n\n"
+                     f"{s1_top}  ║  {s2_top}  ║  {s3_top}\n"
+                     f"━━━━━━━━━━━━━━━\n"
+                     f"{s1_mid}  ║  {s2_mid}  ║  {s3_mid}  ⬅️\n"
+                     f"━━━━━━━━━━━━━━━\n"
+                     f"{s1_bot}  ║  {s2_bot}  ║  {s3_bot}\n\n"
+                     f"⏳ <i>Spinning...</i>")
+        try:
+            bot.edit_message_text(spin_text, chat_id, msg_id, parse_mode="HTML", reply_markup=None)
+        except Exception as e:
+            err = str(e).lower()
+            if "too many requests" in err or "retry after" in err:
+                time.sleep(1.2)
+                try:
+                    bot.edit_message_text(spin_text, chat_id, msg_id, parse_mode="HTML", reply_markup=None)
+                except Exception:
+                    pass
+        time.sleep(delay_schedule[i])
+    time.sleep(0.5)
+    conn = get_db()
+    cursor = conn.cursor()
+    now_str = utc_now_str()
+    cursor.execute("UPDATE users SET last_spin_at=? WHERE id=?", (now_str, user_id))
+    expires_at = utc_now() + timedelta(hours=1)
+    cursor.execute("INSERT INTO spin_rewards (user_id, amount, status, expires_at, warning_sent, expire_sent) VALUES (?,?,?,?,0,0)", (user_id, reward_amount, 'active', expires_at.strftime('%Y-%m-%d %H:%M:%S')))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    expiry_ist = expires_at + timedelta(hours=5, minutes=30)
+    expiry_display = expiry_ist.strftime('%I:%M %p')
+    result_text = (f"🎰 <b>CASH SPIN RESULT!</b> 🎰\n━━━━━━━━━━━━━━━\n\n"
+                   f"{winning_emoji}  ║  {winning_emoji}  ║  {winning_emoji}\n"
+                   f"━━━━━━━━━━━━━━━\n"
+                   f"{winning_emoji}  ║  {winning_emoji}  ║  {winning_emoji}  ⬅️\n"
+                   f"━━━━━━━━━━━━━━━\n"
+                   f"{winning_emoji}  ║  {winning_emoji}  ║  {winning_emoji}\n\n"
+                   f"━━━━━━━━━━━━━━━\n"
+                   f"🎊 <b>JACKPOT!</b>\n\n"
+                   f"💰 Aapko <b>₹{reward_amount}</b> Cash mila!\n\n"
+                   f"⚠️ Sirf <b>1 Ghanta</b> Ka Time!\n"
+                   f"⏰ <b>{expiry_display}</b> tak purchase karo\n"
+                   f"toh yeh ₹{reward_amount} automatically discount milega!\n\n"
+                   f"❌ Use nahi kiya toh reward expire ho jaega!\n"
+                   f"━━━━━━━━━━━━━━━\n"
+                   f"⏰ 24 Ghante baad phir spin milega!")
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now", style="danger"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    try:
+        bot.edit_message_text(result_text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+    except Exception:
+        safe_send(chat_id, result_text, markup)
+
+# BUG #12 FIX: use cached bot username
+def show_referral(call, user_id):
+    bot_username = get_bot_username()
+    link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT total_referrals, referral_earnings FROM users WHERE id=?", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    text = f"""👥 <b>REFERRAL SYSTEM</b>
+
+━━━━━━━━━━━━━━━
+
+🔗 Aapka Link:
+{link}
+
+📋 Tap on link to copy
+
+━━━━━━━━━━━━━━━
+
+👥 Total Referrals: {row['total_referrals'] if row else 0}
+💰 Earnings: ₹{row['referral_earnings'] if row else 0}
+
+━━━━━━━━━━━━━━━
+
+💰 Dosto ko invite karo →
+Unki pehli purchase pe bonus guaranteed!
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={link}", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_selling_proof(call):
+    link = get_setting("selling_proof_link", "https://t.me/")
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("📸 Open Channel", url=link, style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, "📸 SELLING PROOF", markup)
+
+def show_support_menu(call):
+    name1 = get_setting("support_name_1", "Support")
+    support_url = get_setting("support_url", "https://t.me/")
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton(f"👨‍💼 {name1}", url=support_url, style="primary"))
+    markup.add(InlineKeyboardButton("🎫 Create Ticket", callback_data="create_ticket", style="success"))
+    markup.add(InlineKeyboardButton("❓ FAQ", callback_data="faq_menu", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    safe_navigate(call, "💬 <b>SUPPORT CENTER</b> 💬\n\n👋 Need Any Help?\n\n━━━━━━━━━━━━━━━\n\n💬 Purchase Support\n💳 Payment Issues\n🔑 Key Problems\n⚡ Instant Assistance\n\n━━━━━━━━━━━━━━━", markup)
+
+def show_tutorial_menu(call):
+    video_link = get_setting("tutorial_video", "")
+    markup = InlineKeyboardMarkup(row_width=1)
+    if video_link:
+        markup.add(InlineKeyboardButton("▶️ Watch Tutorial Video", url=video_link, style="primary"))
+    markup.add(InlineKeyboardButton("📞 Support", callback_data="support", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger"))
+    text = """<b>HOW TO USE BOT</b>
+
+━━━━━━━━━━━━━━━━━
+
+1️⃣ /start — Bot shuru karo
+
+2️⃣ 📱 Phone verify karo
+
+3️⃣ 💰 Add Balance karo
+    • Fam Pay se turant
+    • Manual Deposit se admin verify
+
+4️⃣ 🔑 Shop Key se product kharido
+
+5️⃣ 📋 Key copy karo
+
+6️⃣ 🎮 Game mein use karo
+
+━━━━━━━━━━━━━━━"""
+    safe_navigate(call, text, markup)
+
+def show_tutorial_video_menu(call):
+    video_link = get_setting("tutorial_video", "")
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("✏️ Change Link", callback_data="change_tutorial_video", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, f"🎬 TUTORIAL VIDEO\n\nCurrent Link: {esc(video_link) or 'N/A'}", markup)
+
+def request_review(call, product_id, rating):
+    set_user_state(call.from_user.id, {"action": "review_screenshot", "product_id": product_id, "rating": rating})
+    safe_navigate(call, "📸 REVIEW SCREENSHOT\n\n━━━━━━━━━━━━━━━\n\nGameplay ka screenshot bhejo.\n\n━━━━━━━━━━━━━━━", InlineKeyboardMarkup().add(InlineKeyboardButton("⏭ Skip", callback_data="skip_review", style="danger")))
+
+def show_bot_maintenance_menu(call):
+    status = get_setting("bot_maintenance", "off")
+    status_text = "🔴 ON" if status == "on" else "🟢 OFF"
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("✅ ON Karo", callback_data="bot_maintenance_on", style="success"))
+    markup.add(InlineKeyboardButton("❌ OFF Karo", callback_data="bot_maintenance_off", style="danger"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, f"🔧 <b>BOT MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\nCurrent Status: {status_text}\n\n━━━━━━━━━━━━━━━", markup)
+
+def show_manage_admins(call):
+    admin_ids = get_admin_ids(force=True)
+    text = "👑 <b>MANAGE ADMINS</b>\n\n━━━━━━━━━━━━━━━\n\n"
+    markup = InlineKeyboardMarkup(row_width=1)
+    text += f"1️⃣ 👑 Admin 1 (Main) - ID: {ADMIN_USER_ID}\n\n"
+    for i, admin_id in enumerate(admin_ids[1:], start=2):
+        text += f"{i}️⃣ Admin {i} - ID: {admin_id}\n\n"
+        markup.add(InlineKeyboardButton(f"➖ Remove Admin {i}", callback_data=f"remove_specific_admin_{admin_id}", style="danger"))
+    text += "━━━━━━━━━━━━━━━"
+    markup.add(InlineKeyboardButton("➕ Add Admin", callback_data="add_admin", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_admin_dashboard(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    today = date.today().isoformat()
+    week_ago = (date.today() - timedelta(days=7)).isoformat()
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='add_money' AND details='fam_pay' AND DATE(created_at)=?", (today,))
+    today_fam = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='add_money' AND (details IS NULL OR details != 'fam_pay') AND DATE(created_at)=?", (today,))
+    today_manual = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='purchase' AND DATE(created_at)=?", (today,))
+    today_sales = cursor.fetchone()["t"]
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE type='purchase' AND DATE(created_at)=?", (today,))
+    today_orders = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE DATE(joined_at)=?", (today,))
+    today_users = cursor.fetchone()["c"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='add_money' AND details='fam_pay' AND DATE(created_at) >= ?", (week_ago,))
+    weekly_fam = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='add_money' AND (details IS NULL OR details != 'fam_pay') AND DATE(created_at) >= ?", (week_ago,))
+    weekly_manual = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='purchase' AND DATE(created_at) >= ?", (week_ago,))
+    weekly_sales = cursor.fetchone()["t"]
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE type='purchase' AND DATE(created_at) >= ?", (week_ago,))
+    weekly_orders = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE DATE(joined_at) >= ?", (week_ago,))
+    weekly_users = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM transactions WHERE type='purchase' AND license_key IS NOT NULL")
+    sold_keys = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM manual_deposits WHERE status='pending'")
+    pending_deposits = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM support_tickets WHERE status='open'")
+    open_tickets = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM pending_api_orders WHERE status='pending'")
+    pending_api = cursor.fetchone()["c"]
+    cursor.execute("""SELECT p.name, COUNT(t.id) as sold FROM products p 
+                      LEFT JOIN transactions t ON t.product_name = p.name AND t.type='purchase' 
+                      GROUP BY p.id ORDER BY sold DESC LIMIT 1""")
+    top_product = cursor.fetchone()
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='add_money' AND details='fam_pay'")
+    lifetime_fam = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='add_money' AND (details IS NULL OR details != 'fam_pay')")
+    lifetime_manual = cursor.fetchone()["t"]
+    cursor.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='purchase'")
+    lifetime_sales = cursor.fetchone()["t"]
+    cursor.execute("SELECT COUNT(*) as c FROM users")
+    lifetime_users = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE is_reseller=1")
+    resellers = cursor.fetchone()["c"]
+    cursor.close()
+    conn.close()
+
+    top_name = top_product["name"] if top_product else "N/A"
+    top_sold = top_product["sold"] if top_product else 0
+
+    # BUG #40 FIX: "PROFIT" renamed to "NET BALANCE" (revenue - sales is not profit)
+    text = f"""👑 ━━━ <b>ADMIN DASHBOARD</b> ━━━ 👑
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📊 <b>TODAY</b>
+
+💳 Fam Pay: ₹{today_fam}
+📱 Manual: ₹{today_manual}
+🛒 Sales: ₹{today_sales}
+📦 Orders: {today_orders}
+👥 New Users: {today_users}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📅 <b>WEEKLY</b>
+
+💳 Fam Pay: ₹{weekly_fam}
+📱 Manual: ₹{weekly_manual}
+🛒 Sales: ₹{weekly_sales}
+📦 Orders: {weekly_orders}
+👥 New Users: {weekly_users}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🔑 <b>KEYS</b>
+
+✅ Sold: {sold_keys}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📊 <b>QUICK STATS</b>
+
+🔔 Pending Deposits: {pending_deposits}
+🎫 Open Tickets: {open_tickets}
+⏳ Pending API Orders: {pending_api}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🏆 <b>TOP SELLING</b>
+
+🥇 {esc(top_name)} — {top_sold} sold
+
+━━━━━━━━━━━━━━━━━━━━━
+
+👑 <b>LIFETIME</b>
+
+💳 Fam Pay: ₹{lifetime_fam}
+📱 Manual: ₹{lifetime_manual}
+🛒 Total Sales: ₹{lifetime_sales}
+👥 Total Users: {lifetime_users}
+🤝 Resellers: {resellers}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+💎 <b>NET BALANCE:</b> ₹{lifetime_fam + lifetime_manual - lifetime_sales}
+
+━━━━━━━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🔄 Refresh", callback_data="admin_dashboard", style="primary"), InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_admin_analytics(call):
+    show_admin_dashboard(call)
+
+def show_admin_today_stats(call):
+    show_admin_dashboard(call)
+
+def show_admin_weekly_stats(call):
+    show_admin_dashboard(call)
+
+def show_admin_top_products(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_name, COUNT(*) as c FROM transactions WHERE type='purchase' AND product_name IS NOT NULL GROUP BY product_name ORDER BY c DESC LIMIT 5")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    text = "🏆 <b>TOP PRODUCTS</b>\n━━━━━━━━━━━━━━━\n\n"
+    if not rows:
+        text += "No sales yet."
+    else:
+        for i, r in enumerate(rows, 1):
+            text += f"{i}. {esc(r['product_name'])} — {r['c']} sold\n"
+    text += "\n━━━━━━━━━━━━━━━"
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_analytics", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_admin_user_growth(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as c FROM users")
+    total = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE DATE(joined_at)=?", (date.today().isoformat(),))
+    today = cursor.fetchone()["c"]
+    cursor.execute("SELECT COUNT(*) as c FROM users WHERE DATE(joined_at) >= ?", ((date.today() - timedelta(days=7)).isoformat(),))
+    week = cursor.fetchone()["c"]
+    cursor.close()
+    conn.close()
+    text = f"""👥 <b>USER GROWTH</b>
+━━━━━━━━━━━━━━━
+
+📊 Total: {total}
+🆕 Today: {today}
+📅 This Week: {week}
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_analytics", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_admin_revenue_report(call):
+    show_admin_dashboard(call)
+    
+def show_manage_products(call):
+    text = """📦 <b>MANAGE PRODUCTS</b>
+━━━━━━━━━━━━━━━
+
+🔑 Apne products ko category ke hisaab se manage karo!
+
+━━━━━━━━━━━━━━━
+
+🤖 <b>ROOT PANEL</b>
+   Root products yahan dikhenge
+
+📱 <b>NON-ROOT PANEL</b>
+   Non-Root products yahan dikhenge
+
+🍎 <b>IPHONE PANEL</b>
+   iPhone products yahan dikhenge
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("🤖 Root Panel", callback_data="manage_category_root", style="primary"))
+    markup.add(InlineKeyboardButton("📱 Non-Root Panel", callback_data="manage_category_nonroot", style="primary"))
+    markup.add(InlineKeyboardButton("🍎 iPhone Panel", callback_data="manage_category_iphone", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_manage_products_by_category(call, category):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, status, api_pid FROM products WHERE category=?", (category,))
+    products = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not products:
+        safe_navigate(call, f"❌ No {category.upper()} products.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+        return
+    category_name = get_category_name(category)
+    text = f"<b>MANAGE {category_name} PRODUCTS</b>\n\n"
+    markup = InlineKeyboardMarkup(row_width=1)
+    for p in products:
+        status = "🔧 Maintenance" if p["status"] == "maintenance" else "✅ Active"
+        api_pid = p["api_pid"] or "❌ No PID"
+        text += f"<b>{esc(p['name'])}</b>\n📊 {status}\n🔗 PID: <code>{esc(api_pid)}</code>\n\n"
+        markup.add(InlineKeyboardButton(f"{p['name']}", callback_data=f"manage_product_{p['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_product_management_menu(call, product_id):
+    user_id = call.from_user.id
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, category, status, api_pid FROM products WHERE id=?", (product_id,))
+    product = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not product:
+        bot.answer_callback_query(call.id, "❌ Not found", show_alert=True)
+        return
+    cat_map = {"root": "🤖 ROOT", "nonroot": "📱 NON-ROOT", "iphone": "🍎 IPHONE"}
+    cat = cat_map.get(product["category"], product["category"].upper())
+    status = "🔧 Maintenance" if product["status"] == "maintenance" else "✅ Active"
+    api_pid_display = product["api_pid"] or "❌ Not Set"
+    markup = InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        ("✏️ Edit Name", f"edit_name_{product_id}", "primary"),
+        ("📅 Add Plan", f"add_plan_menu_{product_id}", "success"),
+        ("📋 Edit Plan", f"manage_plans_{product_id}", "primary"),
+    ]
+    if user_id == ADMIN_USER_ID:
+        buttons.append(("🔗 Set API PID", f"set_api_pid_{product_id}", "primary"))
+    buttons.extend([
+        ("📺 Add Demo Video", f"add_video_menu_{product_id}", "primary"),
+        ("📥 Download Files Link", f"add_download_link_{product_id}", "primary"),
+        ("📝 Add Features", f"add_features_menu_{product_id}", "primary"),
+        ("🔧 Toggle Maintenance", f"toggle_maint_{product_id}", "danger"),
+        ("🗑️ Delete Product", f"del_product_{product_id}", "danger"),
+    ])
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            markup.add(
+                InlineKeyboardButton(buttons[i][0], callback_data=buttons[i][1], style=buttons[i][2]),
+                InlineKeyboardButton(buttons[i+1][0], callback_data=buttons[i+1][1], style=buttons[i+1][2])
+            )
+        else:
+            markup.add(InlineKeyboardButton(buttons[i][0], callback_data=buttons[i][1], style=buttons[i][2]))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger"))
+    text = f"""<b>PRODUCT MANAGEMENT</b>
+
+━━━━━━━━━━━━━━━━━━━
+
+{esc(product['name'])}
+📂 {cat}
+📊 {status}
+🔗 API PID: <code>{esc(api_pid_display)}</code>
+
+━━━━━━━━━━━━━━━━━━━
+
+Choose action:"""
+    safe_navigate(call, text, markup)
+
+def show_plans_management(call, product_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, duration, price FROM plans WHERE product_id=?", (product_id,))
+    plans = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not plans:
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("📅 Add Plan", callback_data=f"add_plan_menu_{product_id}", style="success"))
+        markup.add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{product_id}", style="danger"))
+        safe_navigate(call, "⚠️ No plans.", markup)
+        return
+    markup = InlineKeyboardMarkup(row_width=1)
+    for pl in plans:
+        markup.add(InlineKeyboardButton(f"✏️ {pl['duration']} | ₹{pl['price']}", callback_data=f"edit_plan_{pl['id']}", style="primary"))
+        markup.add(InlineKeyboardButton(f"🗑️ {pl['duration']}", callback_data=f"del_plan_{pl['id']}", style="danger"))
+    markup.add(InlineKeyboardButton("📅 Add Plan", callback_data=f"add_plan_menu_{product_id}", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{product_id}", style="danger"))
+    safe_navigate(call, "📋 MANAGE PLANS", markup)
+
+def show_plan_edit_menu(call, plan_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT pl.duration, pl.price, p.name FROM plans pl JOIN products p ON pl.product_id=p.id WHERE pl.id=?", (plan_id,))
+    plan = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not plan:
+        bot.answer_callback_query(call.id, "❌ Not found", show_alert=True)
+        return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("💰 Edit Price", callback_data=f"edit_plan_price_{plan_id}", style="primary"))
+    markup.add(InlineKeyboardButton("⏰ Edit Duration", callback_data=f"edit_plan_duration_{plan_id}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger"))
+    safe_navigate(call, f"✏️ EDIT PLAN\n\n{esc(plan['name'])}\n⏰ {esc(plan['duration'])}\n💰 ₹{plan['price']}", markup)
+
+def delete_plan(call, plan_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM plans WHERE id=?", (plan_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    log_admin_action(call.from_user.id, "Delete Plan", f"Plan ID: {plan_id}")
+    bot.answer_callback_query(call.id, "✅ Deleted!", show_alert=True)
+
+# BUG #33 FIX: notification rollback logic cleaned — commit before send, only revert on failure
+def toggle_maintenance(call, product_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT status, name FROM products WHERE id=?", (product_id,))
+        row = cursor.fetchone()
+        if row:
+            new_status = 'maintenance' if row["status"] == 'active' else 'active'
+            cursor.execute("UPDATE products SET status=? WHERE id=?", (new_status, product_id))
+            conn.commit()
+            if new_status == 'active':
+                cursor.execute("SELECT id, user_id FROM maintenance_notifications WHERE product_id=? AND notified=0", (product_id,))
+                pending = cursor.fetchall()
+                for n in pending:
+                    try:
+                        safe_send(n["user_id"], f"🔥🔥🔥 HOT ALERT! 🔥🔥🔥\n\n{esc(row['name'])}\n\n⚡ ACTIVE HO GAYA!\n\n🚀 Jaldi Purchase Karo!")
+                        cursor.execute("UPDATE maintenance_notifications SET notified=1 WHERE id=?", (n["id"],))
+                        conn.commit()
+                    except Exception as e:
+                        logger.warning(f"maintenance notify fail user={n['user_id']}: {e}")
+            log_admin_action(call.from_user.id, "Toggle Maintenance", f"Product {row['name']} → {new_status}")
+            bot.answer_callback_query(call.id, f"✅ {new_status}!", show_alert=True)
+    except Exception as e:
+        logger.error(f"toggle_maintenance error: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+    show_product_management_menu(call, product_id)
+
+def delete_product(call, product_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        prow = cursor.fetchone()
+        pname = prow["name"] if prow else "Unknown"
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT id, coupon_id, spin_reward_id FROM pending_api_orders WHERE product_id=? AND status='pending'", (product_id,))
+        pending = cursor.fetchall()
+        for o in pending:
+            if o["coupon_id"]:
+                cursor.execute("UPDATE coupons SET used=0 WHERE id=? AND used=2", (o["coupon_id"],))
+            if o["spin_reward_id"]:
+                cursor.execute("UPDATE spin_rewards SET status='expired' WHERE id=? AND status='reserved'", (o["spin_reward_id"],))
+            cursor.execute("UPDATE pending_api_orders SET status='cancelled' WHERE id=?", (o["id"],))
+        cursor.execute("DELETE FROM plans WHERE product_id=?", (product_id,))
+        cursor.execute("DELETE FROM maintenance_notifications WHERE product_id=?", (product_id,))
+        cursor.execute("DELETE FROM review_reminders WHERE product_id=?", (product_id,))
+        cursor.execute("DELETE FROM reviews WHERE product_id=?", (product_id,))
+        cursor.execute("DELETE FROM products WHERE id=?", (product_id,))
+        conn.commit()
+        log_admin_action(call.from_user.id, "Delete Product", f"{pname} (ID: {product_id})")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"delete_product error: {e}")
+    cursor.close()
+    conn.close()
+    bot.answer_callback_query(call.id, "✅ Deleted!", show_alert=True)
+
+def show_maintenance_products(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, category FROM products WHERE status='maintenance'")
+    products = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not products:
+        safe_navigate(call, "✅ No maintenance products.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+        return
+    text = """🔧 <b>MAINTENANCE PRODUCTS</b>
+
+━━━━━━━━━━━━━━━
+
+"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    cat_map = {"root": "🤖 ROOT", "nonroot": "📱 NON-ROOT", "iphone": "🍎 IPHONE"}
+    for p in products:
+        cat = cat_map.get(p["category"], p["category"].upper())
+        text += f"🔧 {esc(p['name'])}\n📂 {cat}\n\n"
+        markup.add(InlineKeyboardButton(f"✅ Remove Maintenance - {p['name']}", callback_data=f"remove_maint_{p['id']}", style="success"))
+    text += "━━━━━━━━━━━━━━━"
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_add_product_category(call):
+    text = """➕ ━━ <b>ADD PRODUCT</b> ━━
+
+📦 Naya product kis category mein add karna hai?
+
+━━━━━━━━━━━━━━━
+
+🤖 <b>ROOT</b>
+   Root panel ke liye product
+
+📱 <b>NON-ROOT</b>
+   Non-Root panel ke liye product
+
+🍎 <b>IPHONE</b>
+   iPhone panel ke liye product
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("🤖 Root", callback_data="add_product_root", style="primary"))
+    markup.add(InlineKeyboardButton("📱 Non-Root", callback_data="add_product_nonroot", style="primary"))
+    markup.add(InlineKeyboardButton("🍎 iPhone", callback_data="add_product_iphone", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_deposit_requests(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM manual_deposits WHERE status='pending'")
+    deposits = cursor.fetchall()
+    if not deposits:
+        cursor.close()
+        conn.close()
+        safe_navigate(call, "💰 No pending.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger")))
+        return
+    user_ids = [d["user_id"] for d in deposits]
+    placeholders = ",".join("?" * len(user_ids))
+    cursor.execute(f"SELECT id, phone_number, username FROM users WHERE id IN ({placeholders})", user_ids)
+    info_map = {r["id"]: {"phone": r["phone_number"], "username": r["username"]} for r in cursor.fetchall()}
+    cursor.close()
+    conn.close()
+    text = f"""💰 ━━━ <b>DEPOSIT REQUESTS</b> ━━━ 💰
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📊 Pending: {len(deposits)}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    for i, d in enumerate(deposits, 1):
+        user_id = d["user_id"]
+        info = info_map.get(user_id, {})
+        phone = info.get("phone") or "N/A"
+        uname = info.get("username") or "N/A"
+        text += f"📌 <b>REQUEST {i}</b>\n👤 @{esc(uname)}\n🆔 User ID: {user_id}\n📱 Phone: {esc(phone)}\n💰 Amount: ₹{d['amount']}\n📝 UTR: {esc(d['utr'])}\n\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        markup.add(InlineKeyboardButton(f"👤 @{uname} - ₹{d['amount']}", callback_data=f"view_deposit_{d['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, text, markup)
+
+# BUG #32 FIX: no double answer_callback_query
+def show_deposit_detail(call, deposit_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM manual_deposits WHERE id=?", (deposit_id,))
+    d = cursor.fetchone()
+    if not d:
+        cursor.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "❌ Not found", show_alert=True)
+        return
+    cursor.execute("SELECT phone_number, username FROM users WHERE id=?", (d["user_id"],))
+    user_row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    phone = user_row["phone_number"] if user_row and user_row["phone_number"] else "N/A"
+    uname = user_row["username"] if user_row and user_row["username"] else "N/A"
+    caption = f"""📱 ━━━ <b>DEPOSIT DETAILS</b> ━━━ 📱
+
+━━━━━━━━━━━━━━━━━━━━━
+
+👤 @{esc(uname)}
+🆔 User ID: {d['user_id']}
+📱 Phone: {esc(phone)}
+💰 Amount: ₹{d['amount']}
+📝 UTR: {esc(d['utr'])}
+
+━━━━━━━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"approve_deposit_{deposit_id}", style="success"))
+    markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"reject_deposit_{deposit_id}", style="danger"))
+    markup.add(InlineKeyboardButton("📩 DM User", url=f"tg://user?id={d['user_id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_deposit_requests", style="danger"))
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except Exception:
+        pass
+    try:
+        bot.send_photo(call.message.chat.id, d["screenshot_file_id"], caption=caption, parse_mode="HTML", reply_markup=markup)
+    except Exception:
+        safe_send(call.message.chat.id, caption, markup)
+
+# BUG #31 FIX: no fallback 500 magic — use exact deposit amount
+def approve_deposit(call, deposit_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT user_id, amount FROM manual_deposits WHERE id=? AND status='pending'", (deposit_id,))
+        d = cursor.fetchone()
+        if not d:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "❌ Already processed", show_alert=True)
+            return
+        amount = d["amount"] if d["amount"] and d["amount"] > 0 else 0
+        if amount <= 0:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "❌ Invalid amount in deposit", show_alert=True)
+            return
+        cursor.execute("UPDATE manual_deposits SET status='approved' WHERE id=? AND status='pending'", (deposit_id,))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            cursor.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "❌ Already processed", show_alert=True)
+            return
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE id=?", (amount, d["user_id"]))
+        cursor.execute("INSERT INTO transactions (user_id, amount, type, details) VALUES (?,?,'add_money','manual')", (d["user_id"], amount))
+        conn.commit()
+        log_admin_action(call.from_user.id, "Approve Deposit", f"User {d['user_id']} — ₹{amount}")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"approve_deposit error: {e}")
+        cursor.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+        return
+    cursor.close()
+    conn.close()
+    safe_send(d["user_id"], f"✅ PAYMENT APPROVED!\n\n💰 ₹{amount} added to balance.")
+    bot.answer_callback_query(call.id, "✅ Approved!", show_alert=True)
+
+def show_reject_options(call, deposit_id):
+    safe_navigate(call, "❌ Reject?", InlineKeyboardMarkup().add(InlineKeyboardButton("📝 Reason", callback_data=f"reject_with_reason_{deposit_id}", style="primary"), InlineKeyboardButton("❌ No Reason", callback_data=f"reject_no_reason_{deposit_id}", style="danger")))
+
+def reject_deposit_no_reason(call, deposit_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM manual_deposits WHERE id=?", (deposit_id,))
+    d = cursor.fetchone()
+    cursor.execute("UPDATE manual_deposits SET status='rejected' WHERE id=? AND status='pending'", (deposit_id,))
+    conn.commit()
+    if cursor.rowcount == 1 and d:
+        safe_send(d["user_id"], "❌ PAYMENT REJECTED\n\nSupport se contact karo.")
+        log_admin_action(call.from_user.id, "Reject Deposit", f"User {d['user_id']}")
+    cursor.close()
+    conn.close()
+    bot.answer_callback_query(call.id, "✅ Rejected!", show_alert=True)
+
+def show_admin_tickets(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM support_tickets WHERE status='open' ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 WHEN 'low' THEN 4 ELSE 5 END ASC, id DESC")
+    tickets = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not tickets:
+        safe_navigate(call, "🎫 No open tickets.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger")))
+        return
+    markup = InlineKeyboardMarkup(row_width=1)
+    for t in tickets:
+        pri = get_priority_emoji(t["priority"])
+        markup.add(InlineKeyboardButton(f"{pri} #{t['id']} - {t['subject'][:30]}", callback_data=f"view_ticket_{t['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger"))
+    safe_navigate(call, f"🎫 Tickets (Priority Sorted)\n\nOpen: {len(tickets)}", markup)
+
+def show_ticket_detail(call, ticket_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM support_tickets WHERE id=?", (ticket_id,))
+    t = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not t:
+        bot.answer_callback_query(call.id, "❌ Not found", show_alert=True)
+        return
+    pri = get_priority_emoji(t["priority"])
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("💬 Reply", callback_data=f"reply_ticket_{ticket_id}", style="primary"))
+    markup.add(InlineKeyboardButton("📩 DM User", url=f"tg://user?id={t['user_id']}", style="primary"))
+    markup.add(InlineKeyboardButton("✅ Close", callback_data=f"close_ticket_{ticket_id}", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_tickets", style="danger"))
+    safe_navigate(call, f"🎫 TICKET #{ticket_id}\n\n{pri} Priority: {t['priority'].upper()}\n👤 ID: {t['user_id']}\n\n📝 Subject: {esc(t['subject'])}\n💬 Message: {esc(t['message'])}", markup)
+
+def show_reviews(call):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT r.* FROM reviews r ORDER BY r.id DESC LIMIT 20")
+    reviews = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not reviews:
+        safe_navigate(call, "📸 No reviews.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger")))
+        return
+    text = "📸 <b>REVIEWS</b>\n\n"
+    for r in reviews:
+        stars = "⭐" * r["rating"]
+        text += f"{stars} | 👤 {r['user_id']}\n📦 Product: {r['product_id']}\n\n"
+    safe_navigate(call, text, InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger")))
+
+def show_reseller_price_products(call):
+    text = """🤝 ━━ <b>RESELLER PRICES</b> ━━
+
+💎 Reseller prices ko category ke hisaab se manage karo!
+
+━━━━━━━━━━━━━━━
+
+🤖 <b>ROOT PANEL</b>
+   Root products ke reseller prices
+
+📱 <b>NON-ROOT PANEL</b>
+   Non-Root products ke reseller prices
+
+🍎 <b>IPHONE PANEL</b>
+   iPhone products ke reseller prices
+
+━━━━━━━━━━━━━━━"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("🤖 Root Panel", callback_data="reseller_category_root", style="primary"))
+    markup.add(InlineKeyboardButton("📱 Non-Root Panel", callback_data="reseller_category_nonroot", style="primary"))
+    markup.add(InlineKeyboardButton("🍎 iPhone Panel", callback_data="reseller_category_iphone", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_reseller_price_products_by_category(call, category):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM products WHERE category=?", (category,))
+    products = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    if not products:
+        safe_navigate(call, f"❌ No {category.upper()} products.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_reseller_prices", style="danger")))
+        return
+    category_name = get_category_name(category)
+    text = f"🤝 <b>RESELLER PRICES - {category_name}</b>\n\n"
+    markup = InlineKeyboardMarkup(row_width=1)
+    for p in products:
+        markup.add(InlineKeyboardButton(f"{p['name']}", callback_data=f"reseller_price_product_{p['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_reseller_prices", style="danger"))
+    safe_navigate(call, text, markup)
+
+def show_reseller_price_plans(call, product_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, duration, reseller_price FROM plans WHERE product_id=?", (product_id,))
+    plans = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    markup = InlineKeyboardMarkup(row_width=1)
+    for pl in plans:
+        markup.add(InlineKeyboardButton(f"⏰ {pl['duration']} | ₹{pl['reseller_price'] or 'Not Set'}", callback_data=f"edit_reseller_price_{pl['id']}", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_reseller_prices", style="danger"))
+    safe_navigate(call, "💰 Select plan:", markup)
+
+def show_reseller_fee_menu(call):
+    fee = get_setting("reseller_fee", 399)
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("✏️ Change Fee", callback_data="change_reseller_fee", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_payments", style="danger"))
+    safe_navigate(call, f"🤝 RESELLER FEE\n\nCurrent Fee: ₹{fee}", markup)
+
+def show_min_balance_menu(call):
+    min_balance = get_setting("reseller_min_balance", 2000)
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("✏️ Change Min Balance", callback_data="change_min_balance", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_payments", style="danger"))
+    safe_navigate(call, f"💳 MIN BALANCE\n\nCurrent: ₹{min_balance}", markup)
+
+def show_min_deposit_menu(call):
+    min_dep = get_setting("min_deposit", 500)
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton("✏️ Change Amount", callback_data="change_min_deposit", style="primary"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_payments", style="danger"))
+    safe_navigate(call, f"💰 MINIMUM DEPOSIT\n\nCurrent: ₹{min_dep}", markup)
+
+def show_support_contacts_menu(call):
+    text = "💬 <b>SUPPORT CONTACTS</b>\n\n"
+    markup = InlineKeyboardMarkup(row_width=1)
+    name1 = get_setting("support_name_1", "Support")
+    support_url = get_setting("support_url", "https://t.me//")
+    text += f"1️⃣ {esc(name1)}\n🔗 {esc(support_url)}\n\n"
+    markup.add(InlineKeyboardButton("✏️ Edit Name", callback_data="edit_support_contact_default_1", style="primary"))
+    markup.add(InlineKeyboardButton("✏️ Edit URL", callback_data="edit_support_url", style="primary"))
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM support_contacts")
+    contacts = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    for i, c in enumerate(contacts):
+        text += f"{i+2}️⃣ {esc(c['name'])} → ID: {c['user_id']}\n\n"
+        markup.add(InlineKeyboardButton(f"✏️ Edit {c['name']}", callback_data=f"edit_support_contact_{c['id']}", style="primary"))
+        markup.add(InlineKeyboardButton(f"➖ Remove {c['name']}", callback_data=f"remove_support_contact_{c['id']}", style="danger"))
+    markup.add(InlineKeyboardButton("➕ Add Contact", callback_data="add_support_contact", style="success"))
+    markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_support", style="danger"))
+    safe_navigate(call, text, markup)
+
+def backup_database(call):
+    try:
+        conn = get_db()
+        conn.execute("PRAGMA wal_checkpoint(FULL)")
+        conn.close()
+        with open(DB_PATH, "rb") as f:
+            bot.send_document(call.message.chat.id, f, caption="💾 Backup Ready!")
+        log_admin_action(call.from_user.id, "Database Backup")
+        bot.answer_callback_query(call.id, "✅ Sent!", show_alert=True)
+    except Exception as e:
+        logger.error(f"backup_database error: {e}")
+        bot.answer_callback_query(call.id, "❌ Error", show_alert=True)
+
+def prompt_restore(call):
+    if call.from_user.id != ADMIN_USER_ID:
+        bot.answer_callback_query(call.id, "⛔ Only Admin 1", show_alert=True)
+        return
+    set_user_state(call.from_user.id, {"action": "restore_db"})
+    safe_navigate(call, "📂 RESTORE DATA\n\nBackup file bhejo (.db)", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_panel", style="danger")))
+
+# ============ BROADCAST CATEGORY SENDERS ============
+# BUG #41 FIX: dedup user_ids
+def _dedup(ids):
+    seen = set()
+    out = []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+def send_broadcast_to_users(user_ids, broadcast_text):
+    count = 0
+    for uid in _dedup(user_ids):
+        try:
+            safe_send(uid, broadcast_text)
+            count += 1
+        except Exception:
+            pass
+        time.sleep(BROADCAST_DELAY)
+    return count
+
+def send_photo_broadcast(user_ids, file_id, caption=""):
+    count = 0
+    for uid in _dedup(user_ids):
+        try:
+            bot.send_photo(uid, file_id, caption=caption, parse_mode="HTML")
+            count += 1
+        except Exception:
+            pass
+        time.sleep(BROADCAST_DELAY)
+    return count
+
+def send_video_broadcast(user_ids, file_id, caption=""):
+    count = 0
+    for uid in _dedup(user_ids):
+        try:
+            bot.send_video(uid, file_id, caption=caption, parse_mode="HTML")
+            count += 1
+        except Exception:
+            pass
+        time.sleep(BROADCAST_DELAY)
+    return count
+
+def send_voice_broadcast(user_ids, file_id, caption=""):
+    count = 0
+    for uid in _dedup(user_ids):
+        try:
+            bot.send_voice(uid, file_id, caption=caption, parse_mode="HTML")
+            count += 1
+        except Exception:
+            pass
+        time.sleep(BROADCAST_DELAY)
+    return count
+
+def send_audio_broadcast(user_ids, file_id, caption=""):
+    count = 0
+    for uid in _dedup(user_ids):
+        try:
+            bot.send_audio(uid, file_id, caption=caption, parse_mode="HTML")
+            count += 1
+        except Exception:
+            pass
+        time.sleep(BROADCAST_DELAY)
+    return count
+
+def send_document_broadcast(user_ids, file_id, caption=""):
+    count = 0
+    for uid in _dedup(user_ids):
+        try:
+            bot.send_document(uid, file_id, caption=caption, parse_mode="HTML")
+            count += 1
+        except Exception:
+            pass
+        time.sleep(BROADCAST_DELAY)
+    return count
+
+def get_broadcast_targets(category):
+    conn = get_db()
+    cursor = conn.cursor()
+    ids = []
+    if category == "all":
+        cursor.execute("SELECT id FROM users WHERE banned=0")
+        ids = [r["id"] for r in cursor.fetchall()]
+    elif category == "verified":
+        cursor.execute("SELECT id FROM users WHERE banned=0 AND verified=1")
+        ids = [r["id"] for r in cursor.fetchall()]
+    elif category == "inactive":
+        cutoff = (utc_now() - timedelta(days=INACTIVE_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute("SELECT id FROM users WHERE banned=0 AND (last_active IS NULL OR last_active < ?)", (cutoff,))
+        ids = [r["id"] for r in cursor.fetchall()]
+    elif category == "resellers":
+        cursor.execute("SELECT id FROM users WHERE banned=0 AND is_reseller=1")
+        ids = [r["id"] for r in cursor.fetchall()]
+    elif category == "balance":
+        cursor.execute("SELECT id FROM users WHERE banned=0 AND balance > 0")
+        ids = [r["id"] for r in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return ids
+    
+    # ============ PHOTO HANDLER ============
+# BUG #6 FIX: admin check BEFORE state pop, state not silently cleared for non-admin
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    action = state.get("action", "")
+    if action == "change_qr":
+        if user_id == ADMIN_USER_ID:
+            update_setting("qr_code_file_id", message.photo[-1].file_id)
+            pop_user_state(user_id)
+            safe_send(message.chat.id, "✅ QR Updated!")
+            log_admin_action(user_id, "Update QR Code")
+        else:
+            pop_user_state(user_id)
+            safe_send(message.chat.id, "⛔ Sirf Admin 1 change kar sakta hai!")
+        return
+    if action == "manual_screenshot":
+        set_user_state(user_id, {"action": "manual_amount", "screenshot_file_id": message.photo[-1].file_id})
+        safe_send(message.chat.id, "✅ Screenshot received!\n\nAb amount bhejo (sirf number):\n\nExample: 500")
+        return
+    if action == "review_screenshot":
+        product_id = state.get("product_id")
+        rating = state.get("rating")
+        if not product_id or not rating:
+            pop_user_state(user_id)
+            safe_send(message.chat.id, "❌ Session expired. Dobara try karo.")
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO reviews (user_id, product_id, rating, screenshot_file_id) VALUES (?,?,?,?)", (user_id, product_id, rating, message.photo[-1].file_id))
+        cursor.execute("UPDATE review_reminders SET review_submitted=1 WHERE user_id=? AND product_id=?", (user_id, product_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        safe_send(message.chat.id, "✅ Review Submitted!")
+        return
+    if action == "admin_broadcast_media":
+        # BUG #6 FIX: admin check FIRST, then state pop in finally
+        try:
+            if user_id != ADMIN_USER_ID:
+                safe_send(message.chat.id, "⛔ Only Main Admin")
+                return
+            file_id = message.photo[-1].file_id
+            caption = message.caption or ""
+            safe_send(message.chat.id, "📢 Sending image broadcast to all users...")
+            targets = get_broadcast_targets("all")
+            count = send_photo_broadcast(targets, file_id, caption)
+            log_admin_action(user_id, "Media Broadcast", f"Image | {count} users")
+            safe_send(message.chat.id, f"📢 Image broadcast sent to {count} users!")
+        finally:
+            pop_user_state(user_id)
+        return
+
+# ============ VIDEO HANDLER ============
+@bot.message_handler(content_types=['video'])
+def handle_video(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    action = state.get("action", "")
+    if action == "admin_broadcast_media":
+        try:
+            if user_id != ADMIN_USER_ID:
+                safe_send(message.chat.id, "⛔ Only Main Admin")
+                return
+            file_id = message.video.file_id
+            caption = message.caption or ""
+            safe_send(message.chat.id, "📢 Sending video broadcast to all users...")
+            targets = get_broadcast_targets("all")
+            count = send_video_broadcast(targets, file_id, caption)
+            log_admin_action(user_id, "Media Broadcast", f"Video | {count} users")
+            safe_send(message.chat.id, f"📢 Video broadcast sent to {count} users!")
+        finally:
+            pop_user_state(user_id)
+        return
+
+# ============ VOICE HANDLER ============
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    action = state.get("action", "")
+    if action == "admin_broadcast_media":
+        try:
+            if user_id != ADMIN_USER_ID:
+                safe_send(message.chat.id, "⛔ Only Main Admin")
+                return
+            file_id = message.voice.file_id
+            caption = message.caption or ""
+            safe_send(message.chat.id, "📢 Sending voice broadcast to all users...")
+            targets = get_broadcast_targets("all")
+            count = send_voice_broadcast(targets, file_id, caption)
+            log_admin_action(user_id, "Media Broadcast", f"Voice | {count} users")
+            safe_send(message.chat.id, f"📢 Voice broadcast sent to {count} users!")
+        finally:
+            pop_user_state(user_id)
+        return
+
+# ============ AUDIO HANDLER ============
+@bot.message_handler(content_types=['audio'])
+def handle_audio(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    action = state.get("action", "")
+    if action == "admin_broadcast_media":
+        try:
+            if user_id != ADMIN_USER_ID:
+                safe_send(message.chat.id, "⛔ Only Main Admin")
+                return
+            file_id = message.audio.file_id
+            caption = message.caption or ""
+            safe_send(message.chat.id, "📢 Sending audio broadcast to all users...")
+            targets = get_broadcast_targets("all")
+            count = send_audio_broadcast(targets, file_id, caption)
+            log_admin_action(user_id, "Media Broadcast", f"Audio | {count} users")
+            safe_send(message.chat.id, f"📢 Audio broadcast sent to {count} users!")
+        finally:
+            pop_user_state(user_id)
+        return
+
+# ============ DOCUMENT HANDLER ============
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    action = state.get("action", "")
+    if action == "restore_db":
+        if user_id != ADMIN_USER_ID:
+            pop_user_state(user_id)
+            safe_send(message.chat.id, "⛔ Only Admin 1")
+            return
+        if not message.document.file_name.endswith('.db'):
+            safe_send(message.chat.id, "❌ Only .db files")
+            return
+        # BUG #34 FIX: size check before download
+        if message.document.file_size and message.document.file_size > 50 * 1024 * 1024:
+            safe_send(message.chat.id, "❌ File too large (max 50MB)")
+            return
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+            if not downloaded.startswith(b"SQLite format 3\x00"):
+                safe_send(message.chat.id, "❌ Not a valid SQLite DB")
+                pop_user_state(user_id)
+                return
+            emergency_backup(reason="Before restore")
+            with open(DB_PATH, 'wb') as f:
+                f.write(downloaded)
+            pop_user_state(user_id)
+            init_db()
+            safe_send(message.chat.id, "✅ DATA RESTORED!")
+            log_admin_action(user_id, "Restore Database")
+        except Exception as e:
+            logger.error(f"restore error: {e}")
+            safe_send(message.chat.id, "❌ Restore failed")
+        return
+    if action == "admin_broadcast_media":
+        try:
+            if user_id != ADMIN_USER_ID:
+                safe_send(message.chat.id, "⛔ Only Main Admin")
+                return
+            file_id = message.document.file_id
+            caption = message.caption or ""
+            safe_send(message.chat.id, "📢 Sending document broadcast to all users...")
+            targets = get_broadcast_targets("all")
+            count = send_document_broadcast(targets, file_id, caption)
+            log_admin_action(user_id, "Media Broadcast", f"Document | {count} users")
+            safe_send(message.chat.id, f"📢 Document broadcast sent to {count} users!")
+        finally:
+            pop_user_state(user_id)
+        return
+
+# ============ TEXT HANDLER ============
+@bot.message_handler(func=lambda m: True)
+def handle_non_contact(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    action = state.get("action", "")
+    text = (message.text or "").strip()
+
+    if action == "admin_add_balance":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Sirf Main Admin balance add kar sakta hai!")
+            pop_user_state(user_id)
+            return
+        parts = text.split()
+        if len(parts) == 2:
+            try:
+                uid = int(parts[0])
+                amt = int(parts[1])
+            except ValueError:
+                safe_send(message.chat.id, "❌ Invalid numbers. Use: user_id amount")
+                pop_user_state(user_id)
+                return
+            if amt <= 0 or amt > 1000000:
+                safe_send(message.chat.id, "❌ Amount 1 - 10,00,000 ke beech hona chahiye")
+                pop_user_state(user_id)
+                return
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amt, uid))
+            if cursor.rowcount == 0:
+                cursor.execute("INSERT INTO users (id, balance) VALUES (?,?)", (uid, amt))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            log_admin_action(user_id, "Add Balance", f"User {uid} +₹{amt}")
+            safe_send(message.chat.id, f"💰 Balance Updated\n\n👤 {uid}\n💵 ₹{amt}")
+        else:
+            safe_send(message.chat.id, "❌ Format: user_id amount")
+        pop_user_state(user_id)
+        return
+
+    if action == "manual_amount":
+        try:
+            amt = int(text)
+            min_dep = get_setting("min_deposit", 500)
+            if amt < min_dep or amt > 100000:
+                safe_send(message.chat.id, f"❌ Amount ₹{min_dep} - ₹1,00,000 ke beech hona chahiye")
+                return
+            set_user_state(user_id, {"action": "manual_utr", "screenshot_file_id": state.get("screenshot_file_id"), "amount": amt})
+            safe_send(message.chat.id, f"✅ Amount: ₹{amt}\n\nAb UTR number bhejo:\n\nUTR: 123456789012")
+        except ValueError:
+            safe_send(message.chat.id, "❌ Sirf number bhejo")
+        return
+
+    if action == "manual_utr":
+        utr = text.replace("UTR:", "").strip()
+        if not re.match(r'^[A-Za-z0-9]{6,30}$', utr):
+            safe_send(message.chat.id, "❌ Invalid UTR. 6-30 alphanumeric characters.")
+            return
+        screenshot_file_id = state.get("screenshot_file_id", "")
+        amount = state.get("amount", 0)
+        if not screenshot_file_id or amount <= 0:
+            safe_send(message.chat.id, "❌ Missing data. Dobara try karo.")
+            pop_user_state(user_id)
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO manual_deposits (user_id, amount, utr, screenshot_file_id) VALUES (?,?,?,?)", (user_id, amount, utr, screenshot_file_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        safe_send(message.chat.id, "📤 REQUEST SUBMITTED!\n\n✅ Admin verification pending...")
+        notify_admins(f"💰 New manual deposit\n👤 {user_id}\n💰 ₹{amount}\n📝 UTR: {utr}")
+        return
+
+    if action == "ticket_subject":
+        if is_rate_limited(f"ticket_subject_{user_id}", 1, TICKET_COOLDOWN_SECONDS):
+            safe_send(message.chat.id, "❌ Please wait.")
+            pop_user_state(user_id)
+            return
+        if len(text) < 2 or len(text) > 200:
+            safe_send(message.chat.id, "❌ Subject 2-200 chars")
+            return
+        set_user_state(user_id, {"action": "ticket_message", "subject": text})
+        safe_send(message.chat.id, "📝 Subject saved!\n\nAb message likho:")
+        return
+
+    if action == "ticket_message":
+        subject = state.get("subject", "General")
+        msg_text = text
+        if len(msg_text) < 2 or len(msg_text) > 2000:
+            safe_send(message.chat.id, "❌ Message 2-2000 chars")
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO support_tickets (user_id, subject, message) VALUES (?,?,?)", (user_id, subject, msg_text))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        safe_send(message.chat.id, f"✅ Ticket created!\n\n📝 {subject}")
+        notify_admins(f"🎫 New Ticket\n👤 {user_id}\n📝 {subject}")
+        return
+
+    # BUG #22 FIX: None check for ticket_id
+    if action == "admin_ticket_reply":
+        ticket_id = state.get("ticket_id")
+        if not ticket_id:
+            pop_user_state(user_id)
+            safe_send(message.chat.id, "❌ Session expired. Dobara try karo.")
+            return
+        reply = text
+        if not reply or len(reply) > 2000:
+            safe_send(message.chat.id, "❌ Invalid reply")
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, subject FROM support_tickets WHERE id=?", (ticket_id,))
+        t = cursor.fetchone()
+        cursor.execute("UPDATE support_tickets SET admin_reply=?, status='closed' WHERE id=?", (reply, ticket_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        if t:
+            safe_send(t["user_id"], f"💬 <b>Ticket Reply</b>\n\n📝 {esc(t['subject'])}\n\n{esc(reply)}")
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Ticket Reply", f"Ticket #{ticket_id}")
+        safe_send(message.chat.id, "✅ Reply sent!")
+        return
+
+    if action == "admin_reject_reason":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Access denied")
+            pop_user_state(user_id)
+            return
+        deposit_id = state.get("deposit_id")
+        reason = text
+        if not reason or len(reason) > 500:
+            safe_send(message.chat.id, "❌ Invalid reason")
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM manual_deposits WHERE id=?", (deposit_id,))
+        d = cursor.fetchone()
+        cursor.execute("UPDATE manual_deposits SET status='rejected', admin_reason=? WHERE id=? AND status='pending'", (reason, deposit_id))
+        conn.commit()
+        if cursor.rowcount == 1 and d:
+            safe_send(d["user_id"], f"❌ PAYMENT REJECTED\n\n📝 Reason: {esc(reason)}\n\nSupport se contact karo.")
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Reject Deposit", f"Reason: {reason}")
+        safe_send(message.chat.id, "✅ Rejected!")
+        return
+
+    if action == "add_admin_id":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Only Main Admin can add admins")
+            pop_user_state(user_id)
+            return
+        try:
+            new_admin_id = int(text)
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (new_admin_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            invalidate_admin_cache()
+            log_admin_action(user_id, "Add Admin", f"ID: {new_admin_id}")
+            safe_send(message.chat.id, "✅ ADMIN ADDED!")
+        except Exception as e:
+            logger.error(f"add_admin error: {e}")
+            safe_send(message.chat.id, "❌ Invalid ID")
+        pop_user_state(user_id)
+        return
+
+    if action == "add_support_contact":
+        parts = text.split("|")
+        if len(parts) == 2:
+            name = parts[0].strip()[:50]
+            try:
+                uid = int(parts[1].strip())
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO support_contacts (name, user_id) VALUES (?,?)", (name, uid))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                safe_send(message.chat.id, f"✅ Contact added: {esc(name)}")
+            except Exception as e:
+                logger.error(f"add_contact error: {e}")
+                safe_send(message.chat.id, "❌ Invalid ID")
+        else:
+            safe_send(message.chat.id, "❌ Format: Name | UserID")
+        pop_user_state(user_id)
+        return
+
+    if action == "edit_support_contact_default_1":
+        name = text[:50]
+        update_setting("support_name_1", name)
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Edit Support Name", name)
+        safe_send(message.chat.id, f"✅ Contact updated: {esc(name)}")
+        return
+
+    if action == "edit_support_url":
+        url = text[:200]
+        if not url.startswith("https://"):
+            safe_send(message.chat.id, "❌ URL https:// se start hona chahiye")
+            pop_user_state(user_id)
+            return
+        update_setting("support_url", url)
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Edit Support URL", url)
+        safe_send(message.chat.id, f"✅ URL updated: {esc(url)}")
+        return
+
+    if action == "edit_support_contact":
+        contact_id = state.get("contact_id")
+        parts = text.split("|")
+        if len(parts) == 2:
+            name = parts[0].strip()[:50]
+            try:
+                uid = int(parts[1].strip())
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("UPDATE support_contacts SET name=?, user_id=? WHERE id=?", (name, uid, contact_id))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                safe_send(message.chat.id, f"✅ Contact updated: {esc(name)}")
+            except Exception as e:
+                logger.error(f"edit_contact error: {e}")
+                safe_send(message.chat.id, "❌ Invalid ID")
+        else:
+            safe_send(message.chat.id, "❌ Format: Name | UserID")
+        pop_user_state(user_id)
+        return
+
+    if action == "change_reseller_fee":
+        try:
+            new_fee = int(text)
+            if new_fee < 0 or new_fee > 100000:
+                raise ValueError
+            update_setting("reseller_fee", new_fee)
+            log_admin_action(user_id, "Change Reseller Fee", f"₹{new_fee}")
+            safe_send(message.chat.id, f"✅ Reseller Fee updated to ₹{new_fee}!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid amount")
+        pop_user_state(user_id)
+        return
+
+    if action == "change_min_balance":
+        try:
+            new_min = int(text)
+            if new_min < 0 or new_min > 1000000:
+                raise ValueError
+            update_setting("reseller_min_balance", new_min)
+            log_admin_action(user_id, "Change Min Balance", f"₹{new_min}")
+            safe_send(message.chat.id, f"✅ Min Balance updated to ₹{new_min}!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid amount")
+        pop_user_state(user_id)
+        return
+
+    if action == "change_min_deposit":
+        try:
+            new_min = int(text)
+            if new_min < 1 or new_min > 100000:
+                raise ValueError
+            update_setting("min_deposit", new_min)
+            log_admin_action(user_id, "Change Min Deposit", f"₹{new_min}")
+            safe_send(message.chat.id, f"✅ Min Deposit updated to ₹{new_min}!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid amount")
+        pop_user_state(user_id)
+        return
+
+    if action == "change_tutorial_video":
+        update_setting("tutorial_video", text[:500])
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Change Tutorial Video")
+        safe_send(message.chat.id, "✅ Tutorial video link updated!")
+        return
+
+    if action == "add_download_link":
+        product_id = state.get("product_id")
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE products SET download_link=? WHERE id=?", (text[:500], product_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Add Download Link", f"Product {product_id}")
+        safe_send(message.chat.id, "✅ Download files link saved!")
+        return
+
+    if action == "set_api_pid":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Only Main Admin can set API PID")
+            pop_user_state(user_id)
+            return
+        product_id = state.get("product_id")
+        api_pid = text[:50]
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE products SET api_pid=? WHERE id=?", (api_pid, product_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Set API PID", f"Product {product_id} → {api_pid}")
+        safe_send(message.chat.id, f"✅ API PID saved: {esc(api_pid)}")
+        return
+
+    if action == "edit_reseller_price":
+        try:
+            price = int(text)
+            if price < 0 or price > 1000000:
+                raise ValueError
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE plans SET reseller_price=? WHERE id=?", (price, state.get("plan_id")))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            safe_send(message.chat.id, "✅ Updated!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid price")
+        pop_user_state(user_id)
+        return
+
+    if action == "edit_plan_price":
+        try:
+            new_price = int(text)
+            if new_price < 0 or new_price > 1000000:
+                raise ValueError
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE plans SET price=? WHERE id=?", (new_price, state.get("plan_id")))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            log_admin_action(user_id, "Edit Plan Price", f"Plan {state.get('plan_id')} → ₹{new_price}")
+            safe_send(message.chat.id, f"✅ Price updated to ₹{new_price}!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid price")
+        pop_user_state(user_id)
+        return
+
+    if action == "edit_plan_duration":
+        new_duration = text[:50]
+        if not new_duration:
+            safe_send(message.chat.id, "❌ Invalid duration")
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE plans SET duration=? WHERE id=?", (new_duration, state.get("plan_id")))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        safe_send(message.chat.id, f"✅ Duration updated to {esc(new_duration)}!")
+        return
+
+    if action == "edit_name":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE products SET name=? WHERE id=?", (text[:100], state.get("product_id")))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Edit Product Name", text[:100])
+        safe_send(message.chat.id, "✅ Renamed!")
+        return
+
+    # BUG #13 FIX: parse duration with spaces (duration + price + optional reseller_price)
+    if action == "add_plan_menu":
+        added = 0
+        conn = get_db()
+        cursor = conn.cursor()
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # last token = price, second-last optional = reseller_price, rest = duration
+            parts = line.rsplit(None, 2) if len(line.split()) >= 3 else line.rsplit(None, 1)
+            duration = None
+            price = None
+            reseller_price = None
+            try:
+                if len(parts) == 3:
+                    # duration may have spaces: "1 Day 70 50"
+                    try:
+                        reseller_price = int(parts[2])
+                        price = int(parts[1])
+                        duration = parts[0].strip()[:50]
+                    except ValueError:
+                        # parts[2] not int — treat as duration+price only
+                        reseller_price = None
+                        price = int(parts[-1])
+                        duration = " ".join(parts[:-1]).strip()[:50]
+                elif len(parts) == 2:
+                    price = int(parts[1])
+                    duration = parts[0].strip()[:50]
+                else:
+                    continue
+                if not duration or price < 0 or price > 1000000:
+                    continue
+                if reseller_price is not None and (reseller_price < 0 or reseller_price > 1000000):
+                    reseller_price = None
+                cursor.execute("INSERT INTO plans (product_id, duration, price, reseller_price) VALUES (?,?,?,?)", (state.get("product_id"), duration, price, reseller_price))
+                added += 1
+            except Exception:
+                continue
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Add Plans", f"{added} plans to product {state.get('product_id')}")
+        safe_send(message.chat.id, f"✅ {added} plans added!")
+        return
+
+    if action == "add_video":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE products SET demo_video=? WHERE id=?", (text[:500], state.get("product_id")))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        safe_send(message.chat.id, "✅ Video saved!")
+        return
+
+    if action == "add_features":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE products SET features=? WHERE id=?", (text[:2000], state.get("product_id")))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        safe_send(message.chat.id, "✅ Features added!")
+        return
+
+    if action == "add_product":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Only Main Admin can add products")
+            pop_user_state(user_id)
+            return
+        category = state.get("category", "nonroot")
+        conn = get_db()
+        cursor = conn.cursor()
+        added = 0
+        for name in text.split('\n'):
+            name = name.strip()[:100]
+            if name:
+                cursor.execute("INSERT INTO products (name, category) VALUES (?,?)", (name, category))
+                added += 1
+        conn.commit()
+        cursor.execute("SELECT user_id FROM category_notifications WHERE category=? AND notified=0", (category,))
+        notified_users = cursor.fetchall()
+        cursor.execute("UPDATE category_notifications SET notified=1 WHERE category=? AND notified=0", (category,))
+        conn.commit()
+        cat_emoji = get_category_emoji(category)
+        cat_name = get_category_name(category)
+        for user_row in notified_users:
+            notif_text = f"""🔥🔥🔥 <b>HOT ALERT!</b> 🔥🔥🔥
+
+{cat_emoji} <b>{cat_name} PANEL</b>
+
+⚡ New products available!
+
+🚀 Jaldi Purchase Karo!"""
+            markup = InlineKeyboardMarkup(row_width=1)
+            markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_now", style="danger"))
+            try:
+                safe_send(user_row["user_id"], notif_text, markup)
+            except Exception:
+                pass
+            time.sleep(BROADCAST_DELAY)
+        cursor.close()
+        conn.close()
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Add Product", f"{added} {category} products")
+        safe_send(message.chat.id, f"✅ {added} {category.upper()} products added!\n\n🔗 Ab har product ka API PID set karo.")
+        return
+
+    if action == "faq_add":
+        parts = text.split("|", 1)
+        if len(parts) == 2:
+            q = parts[0].strip()[:200]
+            a = parts[1].strip()[:2000]
+            if not q or not a:
+                safe_send(message.chat.id, "❌ Question and answer required")
+                pop_user_state(user_id)
+                return
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COALESCE(MAX(display_order), 0) as m FROM faq")
+            next_order = cursor.fetchone()["m"] + 1
+            cursor.execute("INSERT INTO faq (question, answer, display_order) VALUES (?,?,?)", (q, a, next_order))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            log_admin_action(user_id, "Add FAQ", q)
+            safe_send(message.chat.id, "✅ FAQ added!")
+        else:
+            safe_send(message.chat.id, "❌ Format: Question | Answer")
+        pop_user_state(user_id)
+        return
+
+    if action == "admin_selling_proof":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Only Main Admin can change selling proof link")
+            pop_user_state(user_id)
+            return
+        update_setting("selling_proof_link", text[:500])
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Change Selling Proof Link")
+        safe_send(message.chat.id, "✅ Link updated!")
+        return
+
+    if action == "change_manual_upi":
+        if user_id != ADMIN_USER_ID:
+            safe_send(message.chat.id, "⛔ Only Main Admin can change Manual UPI")
+            pop_user_state(user_id)
+            return
+        upi = text.strip()
+        if not re.match(r'^[\w.\-]+@[\w\-]+$', upi):
+            safe_send(message.chat.id, "❌ Invalid UPI format. Example: yourname@paytm")
+            pop_user_state(user_id)
+            return
+        update_setting("manual_upi", upi)
+        pop_user_state(user_id)
+        log_admin_action(user_id, "Change Manual UPI", upi)
+        safe_send(message.chat.id, f"✅ Manual UPI updated: {esc(upi)}")
+        return
+
+    if action == "admin_ban":
+        try:
+            uid = int(text)
+            ban_user(uid)
+            log_admin_action(user_id, "Ban User", f"ID: {uid}")
+            safe_send(message.chat.id, f"🚫 User {uid} banned!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid ID")
+        pop_user_state(user_id)
+        return
+
+    if action == "admin_unban":
+        try:
+            uid = int(text)
+            unban_user(uid)
+            log_admin_action(user_id, "Unban User", f"ID: {uid}")
+            safe_send(message.chat.id, f"✅ User {uid} unbanned!")
+        except Exception:
+            safe_send(message.chat.id, "❌ Invalid ID")
+        pop_user_state(user_id)
+        return
+
+    if action.startswith("admin_broadcast_"):
+        broadcast_text = text[:4000]
+        if not broadcast_text:
+            pop_user_state(user_id)
+            return
+        category = action.replace("admin_broadcast_", "")
+        targets = get_broadcast_targets(category)
+        safe_send(message.chat.id, f"📢 Sending to {len(targets)} users...")
+        count = send_broadcast_to_users(targets, broadcast_text)
+        log_admin_action(user_id, "Broadcast", f"{category} — {count} users")
+        safe_send(message.chat.id, f"📢 Broadcast sent to {count} users!")
+        pop_user_state(user_id)
+        return
+
+    if not is_verified(user_id):
+        send_verification_request(message.chat.id)
+
+# ============ CALLBACK HANDLER ============
+# BUG #4 FIX: check_maintenance allowed even in maintenance
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.from_user.id
+    update_last_active(user_id)
+
+    data = call.data
+
+    # BUG #4 FIX: allow check_maintenance to pass through always
+    if data == "check_maintenance":
+        if is_bot_maintenance() and user_id not in get_admin_ids():
+            bot.answer_callback_query(call.id, "🔧 Abhi bhi maintenance mein hai!", show_alert=True)
+            return
+        if not is_verified(user_id):
+            bot.answer_callback_query(call.id, "🔐 Pehle verify karo. /start bhejo.", show_alert=True)
+            return
+        safe_navigate(call, get_welcome_text(user_id), get_main_menu(user_id))
+        return
+
+    if is_bot_maintenance() and user_id not in get_admin_ids():
+        bot.answer_callback_query(call.id, "🔧 Bot maintenance mein hai!", show_alert=True)
+        return
+
+    if not is_verified(user_id):
+        bot.answer_callback_query(call.id, "🔐 Verify first", show_alert=True)
+        return
+
+    if data == "shop_now":
+        show_products(call)
+    elif data == "profile":
+        show_profile(call, user_id)
+    elif data == "add_balance":
+        show_add_balance_menu(call)
+    elif data == "auto_pay":
+        set_user_state(user_id, {"keypad_amount": ""})
+        show_keypad(call, user_id, "")
+    elif data == "manual_deposit":
+        show_manual_deposit(call)
+    elif data == "manual_proof":
+        set_user_state(user_id, {"action": "manual_screenshot"})
+        safe_navigate(call, "📸 PAYMENT PROOF\n\n━━━━━━━━━━━━━━━\n\nAb payment ka screenshot bhejo.\n\n━━━━━━━━━━━━━━━\n\n1. UPI app se payment karo\n2. Screenshot lo\n3. Screenshot yahan bhejo\n\n━━━━━━━━━━━━━━━", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Cancel", callback_data="manual_deposit", style="danger")))
+    elif data.startswith("pad_"):
+        handle_keypad(call, data, user_id)
+    elif data == "history":
+        show_history(call, user_id, 0)
+    elif data.startswith("history_page_"):
+        try:
+            show_history(call, user_id, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data == "tutorial":
+        show_tutorial_menu(call)
+    elif data == "reseller_info":
+        show_reseller_info(call)
+    elif data == "join_reseller":
+        join_reseller(call)
+    elif data == "reseller_panel":
+        safe_navigate(call, "🤝 Reseller Panel", InlineKeyboardMarkup().add(InlineKeyboardButton("🔑 Shop Key", callback_data="shop_now", style="danger"), InlineKeyboardButton("◀️ Back", callback_data="back_main", style="danger")))
+    elif data == "selling_proof":
+        show_selling_proof(call)
+    elif data == "support":
+        show_support_menu(call)
+    elif data == "faq_menu":
+        show_faq_menu(call)
+    elif data.startswith("faq_show_"):
+        try:
+            show_faq_answer(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data == "lucky_spin":
+        show_lucky_spin(call)
+    elif data == "spin_now":
+        do_spin(call)
+    elif data == "referral":
+        show_referral(call, user_id)
+    elif data == "back_main":
+        safe_navigate(call, get_welcome_text(user_id), get_main_menu(user_id))
+    elif data.startswith("cancel_qr_"):
+        order_id = data.replace("cancel_qr_", "")
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE pending_payments SET status='cancelled' WHERE order_id=? AND status='pending'", (order_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"cancel_qr error: {e}")
+        bot.answer_callback_query(call.id, "✅ Payment cancelled", show_alert=True)
+        safe_navigate(call, get_welcome_text(user_id), get_main_menu(user_id))
+    elif data == "category_root":
+        show_products_by_category(call, "root")
+    elif data == "category_nonroot":
+        show_products_by_category(call, "nonroot")
+    elif data == "category_iphone":
+        show_products_by_category(call, "iphone")
+    elif data.startswith("notify_category_"):
+        parts = data.split("_", 2)
+        if len(parts) >= 3:
+            notify_category(call, parts[2])
+    elif data.startswith("product_"):
+        try:
+            show_product_plans(call, int(data.split("_")[1]), is_reseller(user_id))
+        except Exception:
+            pass
+    elif data.startswith("demo_"):
+        try:
+            show_demo_video(call, int(data.split("_")[1]))
+        except Exception:
+            pass
+    elif data.startswith("buy_"):
+        parts = data.split("_")
+        if len(parts) == 3:
+            if is_bot_maintenance() and user_id not in get_admin_ids():
+                bot.answer_callback_query(call.id, "🔧 Bot maintenance mein hai!", show_alert=True)
+                safe_navigate(call, "🔧 <b>BOT UNDER MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\n⚠️ Bot abhi maintenance mein hai.\n\nKoi bhi purchase abhi nahi ho sakti.\n\n━━━━━━━━━━━━━━━", InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary")))
+                return
+            try:
+                show_order_confirmation(call, int(parts[1]), int(parts[2]))
+            except Exception:
+                pass
+    elif data.startswith("confirm_"):
+        parts = data.split("_")
+        if len(parts) == 3:
+            if is_bot_maintenance() and user_id not in get_admin_ids():
+                bot.answer_callback_query(call.id, "🔧 Bot maintenance mein hai!", show_alert=True)
+                safe_navigate(call, "🔧 <b>BOT UNDER MAINTENANCE</b>\n\n━━━━━━━━━━━━━━━\n\n⚠️ Bot abhi maintenance mein hai.\n\nKoi bhi purchase abhi nahi ho sakti.\n\n━━━━━━━━━━━━━━━", InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Check Again", callback_data="check_maintenance", style="primary")))
+                return
+            if is_rate_limited(f"purchase_{user_id}", 5, 60):
+                bot.answer_callback_query(call.id, "❌ Too many attempts", show_alert=True)
+                return
+            try:
+                process_purchase(call, int(parts[1]), int(parts[2]))
+            except Exception as e:
+                logger.error(f"process_purchase error: {e}")
+    elif data.startswith("review_"):
+        parts = data.split("_")
+        if len(parts) == 3:
+            try:
+                request_review(call, int(parts[1]), int(parts[2]))
+            except Exception:
+                pass
+    elif data == "skip_review":
+        pop_user_state(user_id)
+        safe_navigate(call, get_welcome_text(user_id), get_main_menu(user_id))
+    elif data == "admin_panel":
+        if user_id in get_admin_ids():
+            safe_navigate(call, get_admin_panel_header(), get_admin_panel(user_id))
+        else:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+    elif data == "admin_dashboard":
+        show_admin_dashboard(call)
+    elif data == "admin_analytics":
+        safe_navigate(call, "📊 <b>ANALYTICS</b>\n━━━━━━━━━━━━━━━\n\nDetailed stats and reports\nfor your business.\n\n━━━━━━━━━━━━━━━", get_admin_analytics_menu())
+    elif data == "admin_today_stats":
+        show_admin_today_stats(call)
+    elif data == "admin_weekly_stats":
+        show_admin_weekly_stats(call)
+    elif data == "admin_top_products":
+        show_admin_top_products(call)
+    elif data == "admin_user_growth":
+        show_admin_user_growth(call)
+    elif data == "admin_revenue_report":
+        show_admin_revenue_report(call)
+    elif data == "admin_products":
+        text = """📦 <b>PRODUCTS MANAGEMENT</b>
+━━━━━━━━━━━━━━━
+
+Manage your products, plans,
+prices and maintenance.
+
+━━━━━━━━━━━━━━━"""
+        safe_navigate(call, text, get_admin_products_menu(user_id))
+    elif data == "admin_payments":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as c FROM manual_deposits WHERE status='pending'")
+        pending = cursor.fetchone()["c"]
+        cursor.close()
+        conn.close()
+        min_dep = get_setting("min_deposit", 500)
+        fee = get_setting("reseller_fee", 399)
+        text = f"""💰 <b>PAYMENTS & BALANCE</b>
+━━━━━━━━━━━━━━━
+
+Manage deposits, QR, fees
+and balance limits.
+
+⏳ Pending Deposits: {pending}
+💳 Min Deposit: ₹{min_dep}
+💸 Reseller Fee: ₹{fee}
+
+━━━━━━━━━━━━━━━"""
+        safe_navigate(call, text, get_admin_payments_menu(user_id))
+    elif data == "admin_users":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as c FROM users")
+        total = cursor.fetchone()["c"]
+        cursor.execute("SELECT COUNT(*) as c FROM users WHERE banned=1")
+        banned = cursor.fetchone()["c"]
+        cursor.execute("SELECT COUNT(*) as c FROM admins")
+        admins = cursor.fetchone()["c"]
+        cursor.close()
+        conn.close()
+        text = f"""👥 <b>USER MANAGEMENT</b>
+━━━━━━━━━━━━━━━
+
+Manage users, balances,
+bans and admins.
+
+👥 Total: {total}
+🚫 Banned: {banned}
+👑 Admins: {admins}
+
+━━━━━━━━━━━━━━━"""
+        safe_navigate(call, text, get_admin_users_menu(user_id))
+    elif data == "admin_support":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as c FROM support_tickets WHERE status='open'")
+        open_t = cursor.fetchone()["c"]
+        cursor.close()
+        conn.close()
+        text = f"""💬 <b>SUPPORT CENTER</b>
+━━━━━━━━━━━━━━━
+
+Manage tickets, contacts,
+FAQ and selling proof.
+
+🎫 Open Tickets: {open_t}
+
+━━━━━━━━━━━━━━━"""
+        safe_navigate(call, text, get_admin_support_menu(user_id))
+    elif data == "admin_settings":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        status = get_setting("bot_maintenance", "off")
+        status_text = "🔴 ON" if status == "on" else "🟢 OFF"
+        text = f"""⚙️ <b>SYSTEM SETTINGS</b>
+━━━━━━━━━━━━━━━
+
+Bot maintenance, backup,
+restore and logs.
+
+🔧 Bot Status: {status_text}
+
+━━━━━━━━━━━━━━━"""
+        safe_navigate(call, text, get_admin_settings_menu(user_id))
+    elif data == "admin_broadcast":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as c FROM users")
+        total = cursor.fetchone()["c"]
+        cursor.close()
+        conn.close()
+        text = f"""📢 <b>BROADCAST</b>
+━━━━━━━━━━━━━━━
+
+Send messages to users.
+
+👥 Total Users: {total}
+
+━━━━━━━━━━━━━━━"""
+        safe_navigate(call, text, get_admin_broadcast_menu())
+    elif data == "admin_bot_maintenance":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        show_bot_maintenance_menu(call)
+    elif data == "bot_maintenance_on":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        update_setting("bot_maintenance", "on")
+        log_admin_action(user_id, "Maintenance ON")
+        bot.answer_callback_query(call.id, "✅ Bot Maintenance ON!", show_alert=True)
+        threading.Thread(target=broadcast_maintenance_on, daemon=True).start()
+        show_bot_maintenance_menu(call)
+    elif data == "bot_maintenance_off":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        update_setting("bot_maintenance", "off")
+        log_admin_action(user_id, "Maintenance OFF")
+        bot.answer_callback_query(call.id, "✅ Bot Maintenance OFF!", show_alert=True)
+        threading.Thread(target=broadcast_maintenance_off, daemon=True).start()
+        show_bot_maintenance_menu(call)
+    elif data == "manage_admins":
+        if user_id == ADMIN_USER_ID:
+            show_manage_admins(call)
+        else:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+    elif data == "add_admin":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin can add admins", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "add_admin_id"})
+        safe_navigate(call, "➕ ADD ADMIN\n\nSend new admin ka User ID:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Cancel", callback_data="manage_admins", style="danger")))
+    elif data.startswith("remove_specific_admin_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin can remove admins", show_alert=True)
+            return
+        try:
+            admin_id = int(data.split("_")[3])
+            if admin_id == ADMIN_USER_ID:
+                bot.answer_callback_query(call.id, "❌ Main admin remove nahi ho sakta", show_alert=True)
+            else:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM admins WHERE user_id=?", (admin_id,))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                invalidate_admin_cache()
+                log_admin_action(user_id, "Remove Admin", f"ID: {admin_id}")
+                bot.answer_callback_query(call.id, f"✅ Admin {admin_id} removed!", show_alert=True)
+                show_manage_admins(call)
+        except Exception:
+            pass
+    elif data == "admin_manage_products":
+        show_manage_products(call)
+    elif data == "manage_category_root":
+        show_manage_products_by_category(call, "root")
+    elif data == "manage_category_nonroot":
+        show_manage_products_by_category(call, "nonroot")
+    elif data == "manage_category_iphone":
+        show_manage_products_by_category(call, "iphone")
+    elif data == "admin_maintenance_products":
+        show_maintenance_products(call)
+    elif data.startswith("remove_maint_"):
+        try:
+            product_id = int(data.split("_")[2])
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE products SET status='active' WHERE id=?", (product_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "✅ Product Active!", show_alert=True)
+            show_maintenance_products(call)
+        except Exception:
+            pass
+    elif data == "admin_deposit_requests":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        show_deposit_requests(call)
+    elif data == "admin_tickets":
+        show_admin_tickets(call)
+    elif data.startswith("view_ticket_"):
+        try:
+            show_ticket_detail(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("reply_ticket_"):
+        set_user_state(user_id, {"action": "admin_ticket_reply", "ticket_id": int(data.split("_")[2])})
+        safe_navigate(call, "💬 Reply likho:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_tickets", style="danger")))
+    elif data.startswith("close_ticket_"):
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE support_tickets SET status='closed' WHERE id=?", (int(data.split("_")[2]),))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "✅ Closed!", show_alert=True)
+            show_admin_tickets(call)
+        except Exception:
+            pass
+    elif data == "admin_change_qr":
+        if user_id == ADMIN_USER_ID:
+            set_user_state(user_id, {"action": "change_qr"})
+            safe_navigate(call, "📱 Send new QR:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_payments", style="danger")))
+        else:
+            bot.answer_callback_query(call.id, "⛔ Sirf Admin 1 change kar sakta hai!", show_alert=True)
+    elif data == "admin_change_manual_upi":
+        if user_id == ADMIN_USER_ID:
+            set_user_state(user_id, {"action": "change_manual_upi"})
+            safe_navigate(call, "🔗 Send new Manual UPI ID:\n\nExample: yourname@paytm", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_payments", style="danger")))
+        else:
+            bot.answer_callback_query(call.id, "⛔ Sirf Admin 1 change kar sakta hai!", show_alert=True)
+    elif data == "admin_selling_proof":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "admin_selling_proof"})
+        safe_navigate(call, "📸 Send channel link:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_support", style="danger")))
+    elif data == "admin_tutorial_video":
+        show_tutorial_video_menu(call)
+    elif data == "change_tutorial_video":
+        set_user_state(user_id, {"action": "change_tutorial_video"})
+        safe_navigate(call, "🎬 Send new video link:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_tutorial_video", style="danger")))
+    elif data == "admin_reseller_prices":
+        show_reseller_price_products(call)
+    elif data == "reseller_category_root":
+        show_reseller_price_products_by_category(call, "root")
+    elif data == "reseller_category_nonroot":
+        show_reseller_price_products_by_category(call, "nonroot")
+    elif data == "reseller_category_iphone":
+        show_reseller_price_products_by_category(call, "iphone")
+    elif data.startswith("reseller_price_product_"):
+        try:
+            show_reseller_price_plans(call, int(data.split("_")[3]))
+        except Exception:
+            pass
+    elif data.startswith("edit_reseller_price_"):
+        set_user_state(user_id, {"action": "edit_reseller_price", "plan_id": int(data.split("_")[3])})
+        safe_navigate(call, "💰 Send price:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_reseller_prices", style="danger")))
+    elif data == "admin_reseller_fee":
+        show_reseller_fee_menu(call)
+    elif data == "change_reseller_fee":
+        set_user_state(user_id, {"action": "change_reseller_fee"})
+        safe_navigate(call, "💰 Send new fee:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_reseller_fee", style="danger")))
+    elif data == "admin_min_balance":
+        show_min_balance_menu(call)
+    elif data == "change_min_balance":
+        set_user_state(user_id, {"action": "change_min_balance"})
+        safe_navigate(call, "💳 Send new minimum balance:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_min_balance", style="danger")))
+    elif data == "admin_min_deposit":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        show_min_deposit_menu(call)
+    elif data == "change_min_deposit":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "change_min_deposit"})
+        safe_navigate(call, "💰 Send new minimum deposit:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_min_deposit", style="danger")))
+    elif data == "admin_support_contacts":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        show_support_contacts_menu(call)
+    elif data == "add_support_contact":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "add_support_contact"})
+        safe_navigate(call, "➕ ADD CONTACT\n\nSend format:\n\nName | UserID", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_support_contacts", style="danger")))
+    elif data == "edit_support_contact_default_1":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "edit_support_contact_default_1"})
+        safe_navigate(call, "✏️ EDIT NAME\n\nSend new name:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_support_contacts", style="danger")))
+    elif data == "edit_support_url":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "edit_support_url"})
+        safe_navigate(call, "✏️ EDIT URL\n\nSend new URL (https://...):", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_support_contacts", style="danger")))
+    elif data.startswith("edit_support_contact_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        try:
+            contact_id = int(data.split("_")[3])
+            set_user_state(user_id, {"action": "edit_support_contact", "contact_id": contact_id})
+            safe_navigate(call, "✏️ EDIT CONTACT\n\nSend format:\n\nName | UserID", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_support_contacts", style="danger")))
+        except Exception:
+            pass
+    elif data.startswith("remove_support_contact_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        try:
+            contact_id = int(data.split("_")[3])
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM support_contacts WHERE id=?", (contact_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "✅ Removed!", show_alert=True)
+            show_support_contacts_menu(call)
+        except Exception:
+            pass
+    elif data == "admin_reviews":
+        show_reviews(call)
+    elif data == "admin_backup":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        backup_database(call)
+    elif data == "admin_restore":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        prompt_restore(call)
+    elif data == "admin_csv_menu":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        safe_navigate(call, "📁 <b>CSV EXPORT</b>\n━━━━━━━━━━━━━━━\n\nKya export karna hai?\n\n━━━━━━━━━━━━━━━", get_admin_csv_menu())
+    elif data == "csv_export_users":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        csv_export(call, "users")
+    elif data == "csv_export_transactions":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        csv_export(call, "transactions")
+    elif data == "csv_export_deposits":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        csv_export(call, "deposits")
+    elif data == "csv_export_orders":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        csv_export(call, "orders")
+    elif data == "admin_logs_view":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        show_admin_logs(call)
+    elif data == "admin_faq_menu":
+        safe_navigate(call, "❓ <b>FAQ MANAGER</b>\n━━━━━━━━━━━━━━━\n\nManage Frequently Asked Questions.\n\n━━━━━━━━━━━━━━━", get_admin_faq_menu())
+    elif data == "faq_view_all":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM faq ORDER BY display_order ASC, id ASC LIMIT 20")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        text = "📋 <b>ALL FAQ (first 20)</b>\n━━━━━━━━━━━━━━━\n\n"
+        for f in rows:
+            entry = f"❓ <b>{esc(f['question'])}</b>\n💬 {esc(f['answer'])}\n\n"
+            if len(text) + len(entry) > 3800:
+                break
+            text += entry
+        text += "━━━━━━━━━━━━━━━"
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_faq_menu", style="danger"))
+        safe_navigate(call, text, markup)
+    elif data == "faq_add":
+        set_user_state(user_id, {"action": "faq_add"})
+        safe_navigate(call, "➕ ADD FAQ\n\nSend format:\n\nQuestion | Answer", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_faq_menu", style="danger")))
+    elif data == "faq_remove_menu":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, question FROM faq ORDER BY id ASC")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not rows:
+            safe_navigate(call, "❌ No FAQ to remove.", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_faq_menu", style="danger")))
+            return
+        markup = InlineKeyboardMarkup(row_width=1)
+        for f in rows:
+            markup.add(InlineKeyboardButton(f"🗑️ {f['question'][:40]}", callback_data=f"faq_delete_{f['id']}", style="danger"))
+        markup.add(InlineKeyboardButton("◀️ Back", callback_data="admin_faq_menu", style="danger"))
+        safe_navigate(call, "➖ REMOVE FAQ\n\nSelect to delete:", markup)
+    elif data.startswith("faq_delete_"):
+        try:
+            fid = int(data.split("_")[2])
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM faq WHERE id=?", (fid,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            log_admin_action(user_id, "Delete FAQ", f"ID: {fid}")
+            bot.answer_callback_query(call.id, "✅ Deleted!", show_alert=True)
+            safe_navigate(call, "➖ REMOVE FAQ\n\nDeleted. Select another or go back.", get_admin_faq_menu())
+        except Exception:
+            pass
+    elif data == "admin_add_product":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        show_add_product_category(call)
+    elif data == "add_product_root":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "add_product", "category": "root"})
+        safe_navigate(call, "📝 Send ROOT product name(s):", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+    elif data == "add_product_nonroot":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "add_product", "category": "nonroot"})
+        safe_navigate(call, "📝 Send NON-ROOT product name(s):", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+    elif data == "add_product_iphone":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "add_product", "category": "iphone"})
+        safe_navigate(call, "📝 Send IPHONE product name(s):", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+    elif data == "admin_add_balance":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "admin_add_balance"})
+        safe_navigate(call, "💰 Send: user_id amount", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_users", style="danger")))
+    elif data == "admin_ban_user":
+        set_user_state(user_id, {"action": "admin_ban"})
+        safe_navigate(call, "🚫 Send user ID:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_users", style="danger")))
+    elif data == "admin_unban_user":
+        set_user_state(user_id, {"action": "admin_unban"})
+        safe_navigate(call, "✅ Send user ID:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_users", style="danger")))
+    elif data == "admin_broadcast_all":
+        set_user_state(user_id, {"action": "admin_broadcast_all"})
+        safe_navigate(call, "📢 Send broadcast message for ALL users:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_broadcast", style="danger")))
+    elif data == "admin_broadcast_verified":
+        set_user_state(user_id, {"action": "admin_broadcast_verified"})
+        safe_navigate(call, "📢 Send broadcast message for VERIFIED users:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_broadcast", style="danger")))
+    elif data == "admin_broadcast_inactive":
+        set_user_state(user_id, {"action": "admin_broadcast_inactive"})
+        safe_navigate(call, "📢 Send broadcast message for INACTIVE users:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_broadcast", style="danger")))
+    elif data == "admin_broadcast_resellers":
+        set_user_state(user_id, {"action": "admin_broadcast_resellers"})
+        safe_navigate(call, "📢 Send broadcast message for RESELLERS:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_broadcast", style="danger")))
+    elif data == "admin_broadcast_balance":
+        set_user_state(user_id, {"action": "admin_broadcast_balance"})
+        safe_navigate(call, "📢 Send broadcast message for users with BALANCE:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_broadcast", style="danger")))
+    elif data == "admin_broadcast_media":
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "admin_broadcast_media"})
+        safe_navigate(
+            call,
+            "📸 <b>MEDIA BROADCAST</b>\n\n"
+            "Ab koi bhi media bhejo:\n\n"
+            "🖼 Image\n"
+            "🎬 Video\n"
+            "🎤 Voice\n"
+            "🎵 Audio\n"
+            "📄 Document\n\n"
+            "Caption ke saath ya bina caption.\n\n"
+            "Bot sab users ko broadcast karega.",
+            InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Cancel", callback_data="admin_broadcast", style="danger"))
+        )
+    elif data.startswith("manage_product_"):
+        try:
+            show_product_management_menu(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("manage_plans_"):
+        try:
+            show_plans_management(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("edit_plan_"):
+        try:
+            show_plan_edit_menu(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("edit_plan_price_"):
+        set_user_state(user_id, {"action": "edit_plan_price", "plan_id": int(data.split("_")[3])})
+        safe_navigate(call, "💰 Send new price:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+    elif data.startswith("edit_plan_duration_"):
+        set_user_state(user_id, {"action": "edit_plan_duration", "plan_id": int(data.split("_")[3])})
+        safe_navigate(call, "⏰ Send duration (e.g. 1 Hour, 7 Days):", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_products", style="danger")))
+    elif data.startswith("del_plan_"):
+        try:
+            delete_plan(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("edit_name_"):
+        set_user_state(user_id, {"action": "edit_name", "product_id": int(data.split("_")[2])})
+        safe_navigate(call, "📝 Send name:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{data.split('_')[2]}", style="danger")))
+    elif data.startswith("add_plan_menu_"):
+        set_user_state(user_id, {"action": "add_plan_menu", "product_id": int(data.split("_")[3])})
+        safe_navigate(call, "📅 Send plans:\n\nFormat: duration price\n\nExample:\n1 Hour 10\n3 Hours 20\n1 Day 70\n7 Days 261", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{data.split('_')[3]}", style="danger")))
+    elif data.startswith("set_api_pid_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Only Main Admin", show_alert=True)
+            return
+        try:
+            product_id = int(data.split("_")[3])
+            set_user_state(user_id, {"action": "set_api_pid", "product_id": product_id})
+            safe_navigate(call, "🔗 Send API PID (from website):", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{product_id}", style="danger")))
+        except Exception:
+            pass
+    elif data.startswith("add_video_menu_"):
+        try:
+            set_user_state(user_id, {"action": "add_video", "product_id": int(data.split("_")[3])})
+            safe_navigate(call, "📺 Send video link:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{data.split('_')[3]}", style="danger")))
+        except Exception:
+            pass
+    elif data.startswith("add_download_link_"):
+        try:
+            product_id = int(data.split("_")[3])
+            set_user_state(user_id, {"action": "add_download_link", "product_id": product_id})
+            safe_navigate(call, "📥 Send channel link:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{product_id}", style="danger")))
+        except Exception:
+            pass
+    elif data.startswith("add_features_menu_"):
+        try:
+            set_user_state(user_id, {"action": "add_features", "product_id": int(data.split("_")[3])})
+            safe_navigate(call, "📝 Send features:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data=f"manage_product_{data.split('_')[3]}", style="danger")))
+        except Exception:
+            pass
+    elif data.startswith("toggle_maint_"):
+        try:
+            toggle_maintenance(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("del_product_"):
+        try:
+            delete_product(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("view_deposit_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        try:
+            show_deposit_detail(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("approve_deposit_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        try:
+            approve_deposit(call, int(data.split("_")[2]))
+        except Exception as e:
+            logger.error(f"approve_deposit error: {e}")
+    elif data.startswith("reject_deposit_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        try:
+            show_reject_options(call, int(data.split("_")[2]))
+        except Exception:
+            pass
+    elif data.startswith("reject_no_reason_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        try:
+            reject_deposit_no_reason(call, int(data.split("_")[3]))
+        except Exception:
+            pass
+    elif data.startswith("reject_with_reason_"):
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "⛔ Access denied", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "admin_reject_reason", "deposit_id": int(data.split("_")[3])})
+        safe_navigate(call, "📝 Reason:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="admin_deposit_requests", style="danger")))
+    elif data.startswith("copy_key_"):
+        bot.answer_callback_query(call.id, "✅ Key pe click karo—copy ho jayegi!", show_alert=True)
+    elif data.startswith("notify_"):
+        try:
+            notify_me(call, int(data.split("_")[1]))
+        except Exception:
+            pass
+    elif data == "create_ticket":
+        if is_rate_limited(f"ticket_{user_id}", 1, TICKET_COOLDOWN_SECONDS):
+            bot.answer_callback_query(call.id, "❌ Please wait before creating another ticket.", show_alert=True)
+            return
+        set_user_state(user_id, {"action": "ticket_subject"})
+        safe_navigate(call, "🎫 Subject likho:", InlineKeyboardMarkup().add(InlineKeyboardButton("◀️ Back", callback_data="support", style="danger")))
+    else:
+        bot.answer_callback_query(call.id, "🔜 Coming soon")
+
+# ============ MAIN ============
+if __name__ == "__main__":
+    init_db()
+    reset_stuck_processing_once()
+    threads = [
+        threading.Thread(target=check_payments, daemon=True),
+        threading.Thread(target=check_pending_api_orders, daemon=True),
+        threading.Thread(target=check_spin_reward_expiry, daemon=True),
+        threading.Thread(target=check_review_reminders, daemon=True),
+        threading.Thread(target=check_spin_reward_notifications, daemon=True),
+        threading.Thread(target=cleanup_user_states, daemon=True),
+        threading.Thread(target=cleanup_stale_pending_orders, daemon=True),
+        threading.Thread(target=reset_stuck_processing, daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    logger.info("🚀 Bot running...")
+    print("🚀 Bot running...")
+    try:
+        while True:
+            try:
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            except Exception as e:
+                logger.error(f"Polling error: {e}")
+                time.sleep(5)
+    except Exception as e:
+        emergency_backup(reason=str(e))
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1)
